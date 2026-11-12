@@ -32,7 +32,12 @@ export async function onRequest(context) {
     try {
       responseData = JSON.parse(responseText);
     } catch {
-      return jsonResponse({ error: 'Respons Google Apps Script tidak valid. Periksa URL dan deployment Web App.' }, 502);
+      const contentType = upstream.headers.get('content-type') || 'tidak diketahui';
+      const isHtml = contentType.includes('text/html') || /^\s*</.test(responseText);
+      const error = isHtml
+        ? `Google Apps Script mengembalikan halaman HTML (HTTP ${upstream.status}). Pastikan URL berakhiran /exec, deployment Web App memakai versi terbaru, dijalankan sebagai Anda, dan aksesnya Anyone.`
+        : `Respons Google Apps Script bukan JSON (HTTP ${upstream.status}, Content-Type: ${contentType}). Pastikan URL Web App dan deployment sudah benar.`;
+      return jsonResponse({ error }, 502);
     }
     return jsonResponse(responseData, upstream.ok ? 200 : 502);
   } catch (error) {
