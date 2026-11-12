@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LSA BIMBEL - Smart Tutoring mManagement</title>
+    <title>LSA BIMBEL - Smart Tutoring Management</title>
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <!-- Tailwind CSS -->
@@ -39,11 +39,42 @@
 </head>
 <body class="bg-slate-50 text-slate-800 font-sans h-screen flex overflow-hidden">
 
+    <!-- Admin Login -->
+    <section id="login-screen" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-50 p-4">
+        <div class="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200 p-8">
+            <div class="flex flex-col items-center text-center mb-8">
+                <div class="w-14 h-14 rounded-2xl bg-primary-50 text-primary-600 flex items-center justify-center mb-4">
+                    <i data-lucide="graduation-cap" class="w-8 h-8"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-slate-800">Login Admin</h1>
+                <p class="text-sm text-slate-500 mt-2">Masuk untuk mengakses dashboard LSA BIMBEL.</p>
+            </div>
+            <form id="login-form" onsubmit="submitAdminLogin(event)" class="space-y-5">
+                <div>
+                    <label for="admin-username" class="block text-sm font-medium text-slate-700 mb-1.5">Username</label>
+                    <input id="admin-username" name="username" type="text" autocomplete="username" required
+                           class="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-100">
+                </div>
+                <div>
+                    <label for="admin-password" class="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
+                    <input id="admin-password" name="password" type="password" autocomplete="current-password" required
+                           class="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-100">
+                </div>
+                <p id="login-error" class="hidden text-sm text-red-600" role="alert"></p>
+                <button id="login-submit-button" type="submit"
+                        class="w-full px-4 py-2.5 text-sm font-semibold text-white bg-primary-600 rounded-lg hover:bg-primary-700 disabled:opacity-60">
+                    Masuk
+                </button>
+            </form>
+            <p class="text-xs text-slate-400 text-center mt-6">Akses khusus Owner / Admin</p>
+        </div>
+    </section>
+
     <!-- Mobile Sidebar Overlay -->
     <div id="sidebar-overlay" class="fixed inset-0 bg-slate-900/50 z-20 hidden md:hidden" onclick="toggleSidebar()"></div>
 
     <!-- Sidebar -->
-    <aside id="sidebar" class="bg-white w-64 border-r border-slate-200 flex flex-col h-full absolute md:relative z-30 transform -translate-x-full md:translate-x-0 transition-transform duration-300">
+    <aside id="sidebar" class="hidden flex flex-col bg-white w-64 border-r border-slate-200 h-full absolute md:relative z-30 transform -translate-x-full md:translate-x-0 transition-transform duration-300">
         <div class="h-16 flex items-center px-6 border-b border-slate-200 justify-between">
             <div class="flex items-center gap-2 text-primary-600">
                 <i data-lucide="graduation-cap" class="w-8 h-8"></i>
@@ -75,7 +106,7 @@
     </aside>
 
     <!-- Main Content -->
-    <div class="flex-1 flex flex-col h-full overflow-hidden relative">
+    <div id="app-shell" class="hidden flex-1 flex flex-col h-full overflow-hidden relative">
         <!-- Topbar -->
         <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-6 z-10">
             <div class="flex items-center gap-4">
@@ -94,7 +125,7 @@
                     <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
                 </button>
                 <div class="h-8 w-px bg-slate-200"></div>
-                <button class="text-sm font-medium text-slate-600 hover:text-primary-600 flex items-center gap-2">
+                <button type="button" onclick="logoutAdmin()" class="text-sm font-medium text-slate-600 hover:text-primary-600 flex items-center gap-2">
                     <i data-lucide="log-out" class="w-4 h-4"></i>
                     <span class="hidden sm:inline">Keluar</span>
                 </button>
@@ -180,10 +211,36 @@
 
         // --- Core UI Functions ---
         function initApp() {
+            lucide.createIcons();
+            callDatabaseApi({ action: 'checkSession' })
+                .then(() => openAdminApp())
+                .catch(error => {
+                    if (error.status === 401) {
+                        showLoginScreen();
+                    } else {
+                        showLoginScreen(error.message || 'Gagal memeriksa sesi admin.');
+                    }
+                });
+        }
+
+        function showLoginScreen(message) {
+            document.getElementById('sidebar').classList.add('hidden');
+            document.getElementById('app-shell').classList.add('hidden');
+            document.getElementById('sidebar-overlay').classList.add('hidden');
+            document.getElementById('login-screen').classList.remove('hidden');
+            const errorElement = document.getElementById('login-error');
+            errorElement.textContent = message || '';
+            errorElement.classList.toggle('hidden', !message);
+        }
+
+        function openAdminApp() {
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('sidebar').classList.remove('hidden');
+            document.getElementById('app-shell').classList.remove('hidden');
             const mainContent = document.getElementById('main-content');
             mainContent.innerHTML = '<div class="flex justify-center items-center h-full"><i data-lucide="loader-2" class="w-8 h-8 animate-spin text-primary-500"></i></div>';
             lucide.createIcons();
-            loadAppDatabase()
+            return loadAppDatabase()
                 .then(result => {
                     databaseVersion = result.version;
                     if (result.database) {
@@ -200,13 +257,55 @@
                     lucide.createIcons();
                 })
                 .catch(error => {
+                    if (error.status === 401) {
+                        showLoginScreen('Sesi admin telah berakhir. Silakan login kembali.');
+                        return;
+                    }
                     mainContent.innerHTML = `
                         <div class="max-w-2xl mx-auto mt-12 bg-red-50 border border-red-200 rounded-xl p-6 text-red-800">
                             <h1 class="text-lg font-bold mb-2">Gagal memuat database</h1>
-                            <p class="text-sm">${error.message || 'Periksa konfigurasi Cloudflare dan Google Apps Script, lalu muat ulang halaman.'}</p>
+                            <p id="database-error-message" class="text-sm"></p>
                         </div>
                     `;
+                    mainContent.querySelector('#database-error-message').textContent =
+                        error.message || 'Periksa konfigurasi Cloudflare dan Google Apps Script, lalu muat ulang halaman.';
                 });
+        }
+
+        async function submitAdminLogin(event) {
+            event.preventDefault();
+            const submitButton = document.getElementById('login-submit-button');
+            const errorElement = document.getElementById('login-error');
+            const username = document.getElementById('admin-username').value.trim();
+            const passwordInput = document.getElementById('admin-password');
+            submitButton.disabled = true;
+            submitButton.textContent = 'Memeriksa...';
+            errorElement.textContent = '';
+            errorElement.classList.add('hidden');
+
+            try {
+                await callDatabaseApi({ action: 'login', username, password: passwordInput.value });
+                passwordInput.value = '';
+                await openAdminApp();
+            } catch (error) {
+                errorElement.textContent = error.status === 401
+                    ? 'Username atau password salah.'
+                    : error.message || 'Login gagal. Periksa konfigurasi dan koneksi.';
+                errorElement.classList.remove('hidden');
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = 'Masuk';
+            }
+        }
+
+        async function logoutAdmin() {
+            try {
+                await callDatabaseApi({ action: 'logout' });
+                showLoginScreen();
+                document.getElementById('admin-password').value = '';
+            } catch (error) {
+                showToast(`Gagal keluar: ${error.message || 'Periksa koneksi lalu coba lagi.'}`, 'error');
+            }
         }
 
         function loadAppDatabase() {
@@ -217,11 +316,23 @@
             const response = await fetch(DATABASE_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
                 body: JSON.stringify(payload)
             });
-            const result = await response.json();
+            let result;
+            try {
+                result = await response.json();
+            } catch {
+                throw new Error('Respons API tidak valid. Periksa konfigurasi Cloudflare.');
+            }
             if (!response.ok || result.error) {
-                throw new Error(result.error || `Permintaan database gagal (HTTP ${response.status}).`);
+                const error = new Error(result.error || `Permintaan database gagal (HTTP ${response.status}).`);
+                error.status = response.status;
+                if (response.status === 401 &&
+                    !['login', 'checkSession', 'logout'].includes(payload.action)) {
+                    showLoginScreen('Sesi admin telah berakhir. Silakan login kembali.');
+                }
+                throw error;
             }
             return result;
         }
