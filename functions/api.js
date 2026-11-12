@@ -34,9 +34,11 @@ export async function onRequest(context) {
     } catch {
       const contentType = upstream.headers.get('content-type') || 'tidak diketahui';
       const isHtml = contentType.includes('text/html') || /^\s*</.test(responseText);
-      const error = isHtml
-        ? `Google Apps Script mengembalikan halaman HTML (HTTP ${upstream.status}). Pastikan URL berakhiran /exec, deployment Web App memakai versi terbaru, dijalankan sebagai Anda, dan aksesnya Anyone.`
-        : `Respons Google Apps Script bukan JSON (HTTP ${upstream.status}, Content-Type: ${contentType}). Pastikan URL Web App dan deployment sudah benar.`;
+      const error = upstream.status === 401
+        ? 'Google Apps Script menolak akses (HTTP 401). Otorisasikan setupDatabase() dari editor Apps Script dan setujui izin Google Sheets. Pastikan juga Web App dijalankan sebagai Anda dengan akses Anyone; kebijakan Google Workspace dapat membatasi akses publik.'
+        : isHtml
+          ? `Google Apps Script mengembalikan halaman HTML (HTTP ${upstream.status}). Pastikan URL berakhiran /exec dan deployment Web App memakai versi terbaru, dijalankan sebagai Anda, dengan akses Anyone.`
+          : `Respons Google Apps Script bukan JSON (HTTP ${upstream.status}, Content-Type: ${contentType}). Periksa URL dan deployment Web App.`;
       return jsonResponse({ error }, 502);
     }
     return jsonResponse(responseData, upstream.ok ? 200 : 502);
