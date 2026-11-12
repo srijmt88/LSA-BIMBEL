@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LSA BIMBEL - Smart Tutoring Management System</title>
+    <title>LSA BIMBEL - Smart Tutoring Management</title>
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <!-- Tailwind CSS -->
@@ -188,7 +188,9 @@
             ],
             tutorEarnings: [
                 { id: 1, tutorId: 1, scheduleId: 1, amount: 50000, status: 'Pending', date: '2026-11-11' }
-            ]
+            ],
+            payments: [],
+            tutorPayments: []
         };
 
         // --- App State ---
@@ -508,7 +510,7 @@
 
         function renderStudents() {
             return `
-                <div class="fade-in max-w-7xl mx-auto h-full flex flex-col">
+                <div class="fade-in max-w-7xl mx-auto min-h-full flex flex-col">
                     <div class="flex justify-between items-center mb-6">
                         <div>
                             <h1 class="text-2xl font-bold text-slate-800">Data Siswa</h1>
@@ -879,21 +881,26 @@
         }
 
         function renderFinance() {
-            // Kalkulasi Dashboard Keuangan
-            const totalIncome = db.invoices.filter(i => i.status === 'Lunas').reduce((sum, i) => sum + i.amount, 0);
-            const unpaidAmount = db.invoices.filter(i => i.status === 'Belum Lunas').reduce((sum, i) => sum + i.amount, 0);
-            const pendingHonor = db.tutorEarnings.filter(e => e.status === 'Pending').reduce((sum, e) => sum + e.amount, 0);
-
-            // Pengelompokan Honor per Tentor
+            const today = getLocalDateString();
+            const totalIncomeToday = db.payments
+                .filter(payment => payment.date === today)
+                .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+            const totalExpensesToday = db.tutorPayments
+                .filter(payment => payment.date === today)
+                .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+            const unpaidAmount = db.invoices.reduce((sum, invoice) => sum + getInvoiceRemaining(invoice), 0);
+            const pendingHonor = db.tutorEarnings.reduce((sum, earning) => sum + getEarningRemaining(earning), 0);
             const tutorHonorMap = {};
             db.tutorEarnings.forEach(e => {
                 if(!tutorHonorMap[e.tutorId]) {
-                    tutorHonorMap[e.tutorId] = { id: e.tutorId, totalSesi: 0, totalHonor: 0, pendingHonor: 0 };
+                    tutorHonorMap[e.tutorId] = { totalSesi: 0, pendingHonor: 0 };
                 }
                 tutorHonorMap[e.tutorId].totalSesi++;
-                tutorHonorMap[e.tutorId].totalHonor += e.amount;
-                if(e.status === 'Pending') tutorHonorMap[e.tutorId].pendingHonor += e.amount;
+                tutorHonorMap[e.tutorId].pendingHonor += getEarningRemaining(e);
             });
+            const invoices = [...db.invoices].sort((a, b) => Number(b.id) - Number(a.id));
+            const payments = [...db.payments].sort((a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id));
+            const tutorPayments = [...db.tutorPayments].sort((a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id));
 
             return `
                 <div class="fade-in max-w-7xl mx-auto h-full flex flex-col">
@@ -903,8 +910,11 @@
                             <p class="text-slate-500 text-sm mt-1">Kelola tagihan siswa, pemasukan, pengeluaran, dan honor tentor.</p>
                         </div>
                         <div class="flex gap-2">
-                            <button class="bg-white text-slate-700 border border-slate-300 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 flex items-center gap-2 shadow-sm transition-colors">
-                                <i data-lucide="receipt" class="w-4 h-4"></i> Pengeluaran
+                            <button onclick="showStudentPaymentModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 flex items-center gap-2 shadow-sm transition-colors">
+                                <i data-lucide="circle-arrow-down" class="w-4 h-4"></i> Pemasukan
+                            </button>
+                            <button onclick="showTutorPayoutModal()" class="bg-white text-slate-700 border border-slate-300 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 flex items-center gap-2 shadow-sm transition-colors">
+                                <i data-lucide="circle-arrow-up" class="w-4 h-4"></i> Pengeluaran
                             </button>
                             <button onclick="showAddInvoiceModal()" class="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-700 flex items-center gap-2 shadow-sm transition-colors">
                                 <i data-lucide="plus-circle" class="w-4 h-4"></i> Buat Tagihan
@@ -913,51 +923,58 @@
                     </div>
 
                     <!-- KPI Keuangan -->
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                        ${kpiCard('Total Pemasukan (Bulan Ini)', 'Rp ' + totalIncome.toLocaleString('id-ID'), 'trending-up', 'bg-green-100 text-green-600')}
+                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+                        ${kpiCard('Pemasukan Hari Ini', formatRupiah(totalIncomeToday), 'trending-up', 'bg-green-100 text-green-600')}
+                        ${kpiCard('Pengeluaran Hari Ini', formatRupiah(totalExpensesToday), 'trending-down', 'bg-red-100 text-red-600')}
                         ${kpiCard('Tagihan Belum Lunas', 'Rp ' + unpaidAmount.toLocaleString('id-ID'), 'alert-circle', 'bg-amber-100 text-amber-600')}
-                        ${kpiCard('Honor Tentor (Belum Dibayar)', 'Rp ' + pendingHonor.toLocaleString('id-ID'), 'wallet', 'bg-blue-100 text-blue-600')}
+                        ${kpiCard('Honor Tentor Belum Dibayar', formatRupiah(pendingHonor), 'wallet', 'bg-blue-100 text-blue-600')}
                     </div>
 
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
                         <!-- Tabel Tagihan Siswa -->
                         <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
                             <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                                <h2 class="font-semibold text-slate-800">Tagihan Siswa Terkini</h2>
-                                <button class="text-sm text-primary-600 font-medium hover:underline">Lihat Semua</button>
+                                <h2 class="font-semibold text-slate-800">Tagihan Siswa</h2>
+                                <button onclick="showAddInvoiceModal()" class="text-sm text-primary-600 font-medium hover:underline">Buat Tagihan</button>
                             </div>
-                            <div class="flex-1 overflow-auto">
+                            <div class="flex-1 overflow-auto max-h-96">
                                 <table class="w-full text-sm text-left whitespace-nowrap">
                                     <thead class="bg-slate-50/50 text-slate-500 sticky top-0 shadow-sm">
                                         <tr>
-                                            <th class="px-5 py-3 font-medium">No. Tagihan</th>
-                                            <th class="px-5 py-3 font-medium">Siswa</th>
-                                            <th class="px-5 py-3 font-medium">Total</th>
+                                            <th class="px-4 py-3 font-medium">Tagihan / Siswa</th>
+                                            <th class="px-4 py-3 font-medium text-right">Tagihan</th>
+                                            <th class="px-4 py-3 font-medium text-right">Dibayar</th>
+                                            <th class="px-4 py-3 font-medium text-right">Kurang</th>
                                             <th class="px-5 py-3 font-medium">Status</th>
                                             <th class="px-5 py-3 font-medium text-center">Aksi</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-slate-100">
-                                        ${db.invoices.map(inv => {
-                                            const student = db.students.find(s => s.id === inv.studentId);
-                                            const statusClass = inv.status === 'Lunas' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
-                                            const actionBtn = inv.status === 'Belum Lunas' 
-                                                ? `<button onclick="showPayInvoiceModal(${inv.id})" class="text-xs bg-green-50 text-green-600 hover:bg-green-100 px-3 py-1.5 rounded-md font-medium border border-green-200 shadow-sm transition-colors">Lunasi</button>`
-                                                : `<span class="text-xs text-slate-400 font-medium flex items-center justify-center gap-1"><i data-lucide="check-check" class="w-4 h-4"></i> Selesai</span>`;
-                                            
+                                        ${invoices.map(inv => {
+                                            const student = db.students.find(s => s.id === inv.studentId) || { name: 'Siswa tidak ditemukan' };
+                                            const paid = getInvoicePaidAmount(inv);
+                                            const remaining = getInvoiceRemaining(inv);
+                                            const status = remaining === 0 ? 'Lunas' : paid > 0 ? 'Cicilan' : 'Belum Lunas';
+                                            const statusClass = remaining === 0 ? 'bg-green-100 text-green-700' : paid > 0 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
+                                            const actionBtn = remaining > 0
+                                                ? `<button onclick="showStudentPaymentModal(${inv.id})" class="text-xs bg-green-50 text-green-700 hover:bg-green-100 px-3 py-1.5 rounded-md font-medium border border-green-200">Terima</button>`
+                                                : `<span class="text-xs text-slate-400 font-medium">Lunas</span>`;
+
                                             return `
                                             <tr class="hover:bg-slate-50 transition-colors">
-                                                <td class="px-5 py-3 font-medium text-slate-700">${inv.invoiceNumber}</td>
-                                                <td class="px-5 py-3">
-                                                    <p class="text-slate-800">${student.name}</p>
-                                                    <p class="text-xs text-slate-500">Jatuh Tempo: ${inv.dueDate}</p>
+                                                <td class="px-4 py-3">
+                                                    <p class="font-medium text-slate-800">${inv.invoiceNumber}</p>
+                                                    <p class="text-xs text-slate-500">${student.name} · Jatuh tempo ${inv.dueDate}</p>
                                                 </td>
-                                                <td class="px-5 py-3 font-medium text-slate-800">Rp ${inv.amount.toLocaleString('id-ID')}</td>
-                                                <td class="px-5 py-3"><span class="px-2.5 py-1 rounded-full text-xs font-medium ${statusClass}">${inv.status}</span></td>
-                                                <td class="px-5 py-3 text-center">${actionBtn}</td>
+                                                <td class="px-4 py-3 text-right">${formatRupiah(inv.amount)}</td>
+                                                <td class="px-4 py-3 text-right text-green-700">${formatRupiah(paid)}</td>
+                                                <td class="px-4 py-3 text-right font-medium ${remaining ? 'text-amber-700' : 'text-slate-400'}">${formatRupiah(remaining)}</td>
+                                                <td class="px-4 py-3"><span class="px-2.5 py-1 rounded-full text-xs font-medium ${statusClass}">${status}</span></td>
+                                                <td class="px-4 py-3 text-center">${actionBtn}</td>
                                             </tr>
                                             `;
                                         }).join('')}
+                                        ${invoices.length ? '' : '<tr><td colspan="6" class="px-5 py-8 text-center text-slate-400">Belum ada tagihan siswa.</td></tr>'}
                                     </tbody>
                                 </table>
                             </div>
@@ -967,9 +984,9 @@
                         <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
                             <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                                 <h2 class="font-semibold text-slate-800">Rekap Honor Tentor</h2>
-                                <button class="text-sm text-primary-600 font-medium hover:underline">Bayar Massal</button>
+                                <button onclick="showTutorPayoutModal()" class="text-sm text-primary-600 font-medium hover:underline">Bayar Tentor</button>
                             </div>
-                            <div class="flex-1 overflow-auto">
+                            <div class="flex-1 overflow-auto max-h-96">
                                 <table class="w-full text-sm text-left whitespace-nowrap">
                                     <thead class="bg-slate-50/50 text-slate-500 sticky top-0 shadow-sm">
                                         <tr>
@@ -990,18 +1007,172 @@
                                                 <td class="px-5 py-3 text-center text-slate-600">${honorData.totalSesi} Sesi</td>
                                                 <td class="px-5 py-3 font-medium text-amber-600 text-right">Rp ${honorData.pendingHonor.toLocaleString('id-ID')}</td>
                                                 <td class="px-5 py-3 text-center">
-                                                    <button class="text-xs bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1.5 rounded-md font-medium border border-primary-200 disabled:opacity-50" ${honorData.pendingHonor === 0 ? 'disabled' : ''}>Bayar</button>
+                                                    <button onclick="showTutorPayoutModal(${t.id})" class="text-xs bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1.5 rounded-md font-medium border border-primary-200 disabled:opacity-50" ${honorData.pendingHonor === 0 ? 'disabled' : ''}>Bayar</button>
                                                 </td>
                                             </tr>
                                             `;
                                         }).join('')}
+                                        ${db.tutors.length ? '' : '<tr><td colspan="4" class="px-5 py-8 text-center text-slate-400">Belum ada data tentor.</td></tr>'}
                                     </tbody>
                                 </table>
                             </div>
                         </div>
                     </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                        <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                            <div class="px-5 py-4 border-b border-slate-100 bg-slate-50">
+                                <h2 class="font-semibold text-slate-800">Riwayat Pemasukan</h2>
+                            </div>
+                            <div class="overflow-auto max-h-72">
+                                <table class="w-full text-sm text-left whitespace-nowrap">
+                                    <thead class="text-slate-500 sticky top-0 bg-white">
+                                        <tr><th class="px-4 py-3 font-medium">Tanggal / Bukti</th><th class="px-4 py-3 font-medium">Siswa</th><th class="px-4 py-3 text-right font-medium">Dibayar</th><th class="px-4 py-3 text-center font-medium">Aksi</th></tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        ${payments.map(payment => `
+                                            <tr>
+                                                <td class="px-4 py-3"><p>${payment.date}</p><p class="text-xs text-slate-400">${payment.receiptNumber}</p></td>
+                                                <td class="px-4 py-3"><p>${payment.studentName}</p><p class="text-xs text-slate-400">${payment.invoiceNumber}</p></td>
+                                                <td class="px-4 py-3 text-right font-medium">${formatRupiah(payment.amount)}</td>
+                                                <td class="px-4 py-3 text-center"><button onclick="printStudentReceipt(${payment.id})" class="text-xs text-primary-600 hover:underline">Cetak</button></td>
+                                            </tr>
+                                        `).join('')}
+                                        ${payments.length ? '' : '<tr><td colspan="4" class="px-4 py-8 text-center text-slate-400">Belum ada pemasukan tercatat.</td></tr>'}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
+
+                        <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                            <div class="px-5 py-4 border-b border-slate-100 bg-slate-50">
+                                <h2 class="font-semibold text-slate-800">Riwayat Pengeluaran</h2>
+                            </div>
+                            <div class="overflow-auto max-h-72">
+                                <table class="w-full text-sm text-left whitespace-nowrap">
+                                    <thead class="text-slate-500 sticky top-0 bg-white">
+                                        <tr><th class="px-4 py-3 font-medium">Tanggal / Bukti</th><th class="px-4 py-3 font-medium">Tentor</th><th class="px-4 py-3 text-right font-medium">Dibayar</th><th class="px-4 py-3 text-center font-medium">Aksi</th></tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        ${tutorPayments.map(payment => `
+                                            <tr>
+                                                <td class="px-4 py-3"><p>${payment.date}</p><p class="text-xs text-slate-400">${payment.receiptNumber}</p></td>
+                                                <td class="px-4 py-3">${payment.tutorName}</td>
+                                                <td class="px-4 py-3 text-right font-medium">${formatRupiah(payment.amount)}</td>
+                                                <td class="px-4 py-3 text-center"><button onclick="printTutorReceipt(${payment.id})" class="text-xs text-primary-600 hover:underline">Cetak</button></td>
+                                            </tr>
+                                        `).join('')}
+                                        ${tutorPayments.length ? '' : '<tr><td colspan="4" class="px-4 py-8 text-center text-slate-400">Belum ada pengeluaran tercatat.</td></tr>'}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
                 </div>
             `;
+        }
+
+        // --- Finance Helpers ---
+        function getLocalDateString(date = new Date()) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function formatRupiah(amount) {
+            return `Rp ${Math.max(0, Math.round(Number(amount) || 0)).toLocaleString('id-ID')}`;
+        }
+
+        function nextRecordId(records) {
+            return records.reduce((maxId, record) => Math.max(maxId, Number(record.id) || 0), 0) + 1;
+        }
+
+        function createReceiptNumber(prefix, id) {
+            return `${prefix}-${getLocalDateString().replace(/-/g, '')}-${String(id).padStart(4, '0')}`;
+        }
+
+        function getInvoicePaidAmount(invoice) {
+            const amount = Math.max(0, Number(invoice.amount) || 0);
+            if (invoice.paidAmount !== undefined && Number.isFinite(Number(invoice.paidAmount))) {
+                return Math.min(amount, Math.max(0, Number(invoice.paidAmount)));
+            }
+            return invoice.status === 'Lunas' ? amount : 0;
+        }
+
+        function getInvoiceRemaining(invoice) {
+            return Math.max(0, (Number(invoice.amount) || 0) - getInvoicePaidAmount(invoice));
+        }
+
+        function getEarningPaidAmount(earning) {
+            const amount = Math.max(0, Number(earning.amount) || 0);
+            if (earning.paidAmount !== undefined && Number.isFinite(Number(earning.paidAmount))) {
+                return Math.min(amount, Math.max(0, Number(earning.paidAmount)));
+            }
+            return earning.status === 'Paid' || earning.status === 'Lunas' ? amount : 0;
+        }
+
+        function getEarningRemaining(earning) {
+            return Math.max(0, (Number(earning.amount) || 0) - getEarningPaidAmount(earning));
+        }
+
+        function escapeHtml(value) {
+            return String(value == null ? '' : value).replace(/[&<>"']/g, character => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            })[character]);
+        }
+
+        function printThermalReceipt(title, receiptNumber, date, detailRows, amountLabel, amount, balanceLabel, balance) {
+            const printWindow = window.open('', '_blank', 'width=380,height=700');
+            if (!printWindow) {
+                showToast('Izinkan pop-up browser untuk mencetak bukti pembayaran.', 'error');
+                return;
+            }
+            const rows = detailRows.map(([label, value]) => `
+                <div class="row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>
+            `).join('');
+            printWindow.document.write(`<!doctype html>
+                <html lang="id">
+                <head>
+                    <meta charset="utf-8">
+                    <title>${escapeHtml(receiptNumber)}</title>
+                    <style>
+                        @page { size: 80mm auto; margin: 3mm; }
+                        * { box-sizing: border-box; }
+                        body { width: 74mm; margin: 0 auto; color: #111; font: 12px Arial, sans-serif; }
+                        h1 { margin: 0; text-align: center; font-size: 17px; }
+                        h2 { margin: 5px 0 12px; text-align: center; font-size: 13px; }
+                        p { margin: 4px 0; }
+                        .center { text-align: center; }
+                        .rule { border-top: 1px dashed #222; margin: 9px 0; }
+                        .row { display: flex; justify-content: space-between; gap: 8px; margin: 6px 0; }
+                        .row span { max-width: 48%; }
+                        .row strong { max-width: 52%; text-align: right; overflow-wrap: anywhere; }
+                        .total { font-size: 14px; }
+                        .footer { margin-top: 15px; text-align: center; }
+                        @media screen { body { padding: 8px; } }
+                    </style>
+                </head>
+                <body>
+                    <h1>LSA BIMBEL</h1>
+                    <h2>${escapeHtml(title)}</h2>
+                    <p>No. Bukti: ${escapeHtml(receiptNumber)}</p>
+                    <p>Tanggal: ${escapeHtml(date)}</p>
+                    <div class="rule"></div>
+                    ${rows}
+                    <div class="rule"></div>
+                    <div class="row total"><span>${escapeHtml(amountLabel)}</span><strong>${escapeHtml(formatRupiah(amount))}</strong></div>
+                    <div class="row"><span>${escapeHtml(balanceLabel)}</span><strong>${escapeHtml(formatRupiah(balance))}</strong></div>
+                    <div class="footer">Terima kasih.<br>Bukti ini dicetak oleh sistem LSA BIMBEL.</div>
+                </body>
+                </html>`);
+            printWindow.document.close();
+            printWindow.focus();
+            setTimeout(() => printWindow.print(), 250);
         }
 
         // --- Helpers & Components ---
@@ -1076,8 +1247,7 @@
             modalBody.innerHTML = htmlContent;
             modalActionBtn.innerText = actionText;
             modalActionBtn.onclick = () => {
-                actionCallback();
-                closeModal();
+                if (actionCallback() !== false) closeModal();
             };
             
             modalContainer.classList.remove('hidden');
@@ -1578,7 +1748,13 @@
         }
 
         function showAddInvoiceModal() {
-            const studentOptions = db.students.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
+            if (!db.students.length) {
+                showToast('Tambahkan data siswa sebelum membuat tagihan.', 'error');
+                return;
+            }
+            const studentOptions = db.students.map(s =>
+                `<option value="${s.id}">${escapeHtml(s.name)} (${escapeHtml(s.code)})</option>`
+            ).join('');
             
             const formHtml = `
                 <div class="space-y-4">
@@ -1600,23 +1776,24 @@
             `;
 
             openModal('Buat Tagihan Baru', formHtml, 'Buat Tagihan', () => {
-                const studentId = parseInt(document.getElementById('inv-student').value);
-                const amount = parseInt(document.getElementById('inv-amount').value) || 0;
+                const studentId = Number(document.getElementById('inv-student').value);
+                const amount = Number(document.getElementById('inv-amount').value);
                 const due = document.getElementById('inv-due').value;
 
-                if(!amount || !due) {
-                    showToast('Harap isi nominal dan tanggal jatuh tempo', 'error');
-                    modalContainer.classList.remove('hidden');
-                    return;
+                if (!Number.isSafeInteger(amount) || amount <= 0 || !due) {
+                    showToast('Isi nominal tagihan yang valid dan tanggal jatuh tempo.', 'error');
+                    return false;
                 }
 
-                const invoiceNo = `INV-2611-00${db.invoices.length + 1}`;
+                const invoiceId = nextRecordId(db.invoices);
+                const invoiceNo = createReceiptNumber('INV', invoiceId);
 
                 db.invoices.unshift({
-                    id: db.invoices.length + 1,
+                    id: invoiceId,
                     studentId: studentId,
                     invoiceNumber: invoiceNo,
                     amount: amount,
+                    paidAmount: 0,
                     dueDate: due,
                     status: 'Belum Lunas'
                 });
@@ -1626,29 +1803,280 @@
             });
         }
 
-        function showPayInvoiceModal(invoiceId) {
-            const invoice = db.invoices.find(i => i.id === invoiceId);
-            const student = db.students.find(s => s.id === invoice.studentId);
-            
-            const html = `
-                <div class="text-center space-y-4 py-4">
-                    <div class="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-2">
-                        <i data-lucide="check-circle" class="w-8 h-8"></i>
+        function showStudentPaymentModal(invoiceId) {
+            const openInvoices = db.invoices.filter(invoice => getInvoiceRemaining(invoice) > 0);
+            if (!openInvoices.length) {
+                showToast('Tidak ada tagihan siswa yang belum lunas.', 'error');
+                return;
+            }
+
+            const selectedId = invoiceId == null ? openInvoices[0].id : invoiceId;
+            const invoiceOptions = openInvoices.map(invoice => {
+                const student = db.students.find(item => item.id === invoice.studentId) || { name: 'Siswa tidak ditemukan' };
+                const selected = String(invoice.id) === String(selectedId) ? 'selected' : '';
+                return `<option value="${invoice.id}" ${selected}>${escapeHtml(student.name)} - ${escapeHtml(invoice.invoiceNumber)} (sisa ${escapeHtml(formatRupiah(getInvoiceRemaining(invoice)))})</option>`;
+            }).join('');
+
+            openModal('Catat Pemasukan Siswa', `
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Siswa / Tagihan</label>
+                        <select id="pay-invoice-select" onchange="updateStudentPaymentPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                            ${invoiceOptions}
+                        </select>
                     </div>
-                    <h3 class="text-lg font-bold text-slate-800">Konfirmasi Pembayaran</h3>
-                    <p class="text-sm text-slate-500">Anda akan menandai tagihan <b>${invoice.invoiceNumber}</b> atas nama <b>${student.name}</b> sebesar <b class="text-slate-700">Rp ${invoice.amount.toLocaleString('id-ID')}</b> menjadi status <b>LUNAS</b>.</p>
-                    <div class="bg-amber-50 border border-amber-200 text-amber-700 text-xs p-3 rounded-lg flex gap-2 text-left mt-4">
-                        <i data-lucide="info" class="w-4 h-4 shrink-0 mt-0.5"></i>
-                        <p>Pastikan Anda telah menerima dana pembayaran yang sesuai sebelum melanjutkan aksi ini.</p>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div class="rounded-lg bg-slate-50 p-3"><p class="text-slate-500">Total tagihan</p><p id="pay-billed" class="font-semibold mt-1"></p></div>
+                        <div class="rounded-lg bg-green-50 p-3"><p class="text-slate-500">Sudah dibayar</p><p id="pay-paid-before" class="font-semibold text-green-700 mt-1"></p></div>
+                    </div>
+                    <div>
+                        <label for="pay-amount" class="block text-sm font-medium text-slate-700 mb-1">Dibayar sekarang (Rp)</label>
+                        <input id="pay-amount" type="number" min="1" step="1" oninput="updateStudentPaymentPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" required>
+                    </div>
+                    <div class="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
+                        <span class="text-slate-600">Kurang bayar setelah transaksi:</span>
+                        <strong id="pay-remaining-after" class="block mt-1 text-amber-800"></strong>
                     </div>
                 </div>
-            `;
-            
-            openModal('Pelunasan Tagihan', html, 'Ya, Tandai Lunas', () => {
-                invoice.status = 'Lunas';
-                saveDatabaseAfterChange(`Pembayaran tagihan ${invoice.invoiceNumber} berhasil disimpan.`);
-                if(currentState.route === 'finance') navigate('finance');
+            `, 'Simpan & Buat Bukti', () => {
+                const invoice = db.invoices.find(item => String(item.id) === document.getElementById('pay-invoice-select').value);
+                const amount = Number(document.getElementById('pay-amount').value);
+                const remaining = invoice ? getInvoiceRemaining(invoice) : 0;
+                if (!invoice || !Number.isSafeInteger(amount) || amount <= 0 || amount > remaining) {
+                    showToast('Nominal pembayaran harus lebih dari 0 dan tidak boleh melebihi sisa tagihan.', 'error');
+                    return false;
+                }
+
+                const student = db.students.find(item => item.id === invoice.studentId);
+                if (!student) {
+                    showToast('Data siswa pada tagihan tidak ditemukan.', 'error');
+                    return false;
+                }
+
+                const paymentId = nextRecordId(db.payments);
+                const paidBefore = getInvoicePaidAmount(invoice);
+                const payment = {
+                    id: paymentId,
+                    receiptNumber: createReceiptNumber('BKM', paymentId),
+                    invoiceId: invoice.id,
+                    invoiceNumber: invoice.invoiceNumber,
+                    studentId: student.id,
+                    studentName: student.name,
+                    billedAmount: Number(invoice.amount),
+                    paidBefore: paidBefore,
+                    amount: amount,
+                    totalPaid: paidBefore + amount,
+                    remainingAfter: remaining - amount,
+                    date: getLocalDateString()
+                };
+                const previousPaidAmount = invoice.paidAmount;
+                const previousStatus = invoice.status;
+                db.payments.push(payment);
+                invoice.paidAmount = payment.totalPaid;
+                invoice.status = payment.remainingAfter === 0 ? 'Lunas' : 'Belum Lunas';
+
+                persistDatabase(`Pembayaran ${payment.receiptNumber} berhasil dicatat.`)
+                    .then(() => navigate('finance'))
+                    .catch(() => {
+                        db.payments = db.payments.filter(item => item.id !== paymentId);
+                        if (previousPaidAmount === undefined) delete invoice.paidAmount;
+                        else invoice.paidAmount = previousPaidAmount;
+                        invoice.status = previousStatus;
+                        navigate('finance');
+                    });
             });
+            updateStudentPaymentPreview();
+        }
+
+        function updateStudentPaymentPreview() {
+            const select = document.getElementById('pay-invoice-select');
+            const amountInput = document.getElementById('pay-amount');
+            if (!select || !amountInput) return;
+            const invoice = db.invoices.find(item => String(item.id) === select.value);
+            if (!invoice) return;
+
+            const paid = getInvoicePaidAmount(invoice);
+            const remaining = getInvoiceRemaining(invoice);
+            document.getElementById('pay-billed').textContent = formatRupiah(invoice.amount);
+            document.getElementById('pay-paid-before').textContent = formatRupiah(paid);
+            if (!amountInput.value) amountInput.value = String(remaining);
+            const amount = Number(amountInput.value) || 0;
+            const remainingAfter = remaining - amount;
+            const balanceElement = document.getElementById('pay-remaining-after');
+            balanceElement.textContent = remainingAfter < 0
+                ? 'Pembayaran melebihi sisa tagihan'
+                : formatRupiah(remainingAfter);
+            balanceElement.className = `block mt-1 ${remainingAfter < 0 ? 'text-red-700' : 'text-amber-800'}`;
+        }
+
+        function getTutorPendingAmount(tutorId) {
+            return db.tutorEarnings
+                .filter(earning => String(earning.tutorId) === String(tutorId))
+                .reduce((sum, earning) => sum + getEarningRemaining(earning), 0);
+        }
+
+        function showTutorPayoutModal(tutorId) {
+            const payableTutors = db.tutors.filter(tutor => getTutorPendingAmount(tutor.id) > 0);
+            if (!payableTutors.length) {
+                showToast('Tidak ada honor tentor yang belum dibayar.', 'error');
+                return;
+            }
+            const selectedId = tutorId == null || getTutorPendingAmount(tutorId) <= 0
+                ? payableTutors[0].id
+                : tutorId;
+            const tutorOptions = payableTutors.map(tutor =>
+                `<option value="${tutor.id}" ${String(tutor.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(tutor.name)} - sisa ${escapeHtml(formatRupiah(getTutorPendingAmount(tutor.id)))}</option>`
+            ).join('');
+
+            openModal('Catat Pengeluaran Honor Tentor', `
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Tentor yang dibayar</label>
+                        <select id="payout-tutor-select" onchange="updateTutorPayoutPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                            ${tutorOptions}
+                        </select>
+                    </div>
+                    <div class="rounded-lg bg-slate-50 p-3 text-sm">
+                        <p class="text-slate-500">Total honor belum dibayar</p>
+                        <p id="payout-due" class="font-semibold text-slate-800 mt-1"></p>
+                    </div>
+                    <div>
+                        <label for="payout-amount" class="block text-sm font-medium text-slate-700 mb-1">Dibayarkan sekarang (Rp)</label>
+                        <input id="payout-amount" type="number" min="1" step="1" oninput="updateTutorPayoutPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" required>
+                    </div>
+                    <div class="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
+                        <span class="text-slate-600">Sisa honor setelah pembayaran:</span>
+                        <strong id="payout-remaining-after" class="block mt-1 text-amber-800"></strong>
+                    </div>
+                </div>
+            `, 'Bayar & Buat Bukti', () => {
+                const selectedTutorId = document.getElementById('payout-tutor-select').value;
+                const tutor = db.tutors.find(item => String(item.id) === selectedTutorId);
+                const amount = Number(document.getElementById('payout-amount').value);
+                const due = tutor ? getTutorPendingAmount(tutor.id) : 0;
+                if (!tutor || !Number.isSafeInteger(amount) || amount <= 0 || amount > due) {
+                    showToast('Nominal pembayaran harus lebih dari 0 dan tidak boleh melebihi honor tertunggak.', 'error');
+                    return false;
+                }
+
+                let amountToAllocate = amount;
+                const earningChanges = db.tutorEarnings
+                    .filter(earning => String(earning.tutorId) === String(tutor.id) && getEarningRemaining(earning) > 0)
+                    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || Number(a.id) - Number(b.id))
+                    .map(earning => {
+                        const paidBefore = getEarningPaidAmount(earning);
+                        const allocated = Math.min(getEarningRemaining(earning), amountToAllocate);
+                        amountToAllocate -= allocated;
+                        return {
+                            earning,
+                            paidBefore,
+                            previousPaidAmount: earning.paidAmount,
+                            previousStatus: earning.status,
+                            allocated
+                        };
+                    })
+                    .filter(change => change.allocated > 0);
+                if (amountToAllocate !== 0) {
+                    showToast('Data honor berubah. Muat ulang halaman dan coba kembali.', 'error');
+                    return false;
+                }
+
+                const paymentId = nextRecordId(db.tutorPayments);
+                const payment = {
+                    id: paymentId,
+                    receiptNumber: createReceiptNumber('KLR', paymentId),
+                    tutorId: tutor.id,
+                    tutorName: tutor.name,
+                    amount: amount,
+                    remainingAfter: due - amount,
+                    allocations: earningChanges.map(change => ({
+                        earningId: change.earning.id,
+                        amount: change.allocated
+                    })),
+                    date: getLocalDateString()
+                };
+                earningChanges.forEach(change => {
+                    change.earning.paidAmount = change.paidBefore + change.allocated;
+                    change.earning.status = change.earning.paidAmount >= Number(change.earning.amount)
+                        ? 'Paid'
+                        : 'Pending';
+                });
+                db.tutorPayments.push(payment);
+
+                persistDatabase(`Pembayaran honor ${tutor.name} berhasil dicatat.`)
+                    .then(() => navigate('finance'))
+                    .catch(() => {
+                        db.tutorPayments = db.tutorPayments.filter(item => item.id !== paymentId);
+                        earningChanges.forEach(change => {
+                            if (change.previousPaidAmount === undefined) delete change.earning.paidAmount;
+                            else change.earning.paidAmount = change.previousPaidAmount;
+                            change.earning.status = change.previousStatus;
+                        });
+                        navigate('finance');
+                    });
+            });
+            updateTutorPayoutPreview();
+        }
+
+        function updateTutorPayoutPreview() {
+            const select = document.getElementById('payout-tutor-select');
+            const amountInput = document.getElementById('payout-amount');
+            if (!select || !amountInput) return;
+            const due = getTutorPendingAmount(select.value);
+            document.getElementById('payout-due').textContent = formatRupiah(due);
+            if (!amountInput.value) amountInput.value = String(due);
+            const amount = Number(amountInput.value) || 0;
+            const remainingAfter = due - amount;
+            const balanceElement = document.getElementById('payout-remaining-after');
+            balanceElement.textContent = remainingAfter < 0
+                ? 'Pembayaran melebihi honor tertunggak'
+                : formatRupiah(remainingAfter);
+            balanceElement.className = `block mt-1 ${remainingAfter < 0 ? 'text-red-700' : 'text-amber-800'}`;
+        }
+
+        function printStudentReceipt(paymentId) {
+            const payment = db.payments.find(item => item.id === paymentId);
+            if (!payment) {
+                showToast('Data bukti pemasukan tidak ditemukan.', 'error');
+                return;
+            }
+            printThermalReceipt(
+                'BUKTI PEMBAYARAN SISWA',
+                payment.receiptNumber,
+                payment.date,
+                [
+                    ['Nama siswa', payment.studentName],
+                    ['No. tagihan', payment.invoiceNumber],
+                    ['Total tagihan', formatRupiah(payment.billedAmount)],
+                    ['Pembayaran sebelumnya', formatRupiah(payment.paidBefore)],
+                    ['Total sudah dibayar', formatRupiah(payment.totalPaid)]
+                ],
+                'Diterima',
+                payment.amount,
+                'Sisa tagihan',
+                payment.remainingAfter
+            );
+        }
+
+        function printTutorReceipt(paymentId) {
+            const payment = db.tutorPayments.find(item => item.id === paymentId);
+            if (!payment) {
+                showToast('Data bukti pengeluaran tidak ditemukan.', 'error');
+                return;
+            }
+            printThermalReceipt(
+                'BUKTI PEMBAYARAN HONOR TENTOR',
+                payment.receiptNumber,
+                payment.date,
+                [
+                    ['Nama tentor', payment.tutorName],
+                    ['Honor dibayar', `${payment.allocations.length} catatan honor`]
+                ],
+                'Dibayarkan',
+                payment.amount,
+                'Sisa honor tertunggak',
+                payment.remainingAfter
+            );
         }
 
         // --- Init ---
