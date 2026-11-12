@@ -66,9 +66,11 @@ async function getHmacKey(secret, usages) {
   );
 }
 
-async function createSessionToken(username, secret) {
+async function createSessionToken(username, secret, role, tutorId) {
   const payload = encodeBase64Url(new TextEncoder().encode(JSON.stringify({
     username,
+    role,
+    ...(role === 'tutor' ? { tutorId } : {}),
     expiresAt: Date.now() + SESSION_DURATION_SECONDS * 1000
   })));
   const signature = await crypto.subtle.sign(
@@ -86,7 +88,38 @@ function getCookie(request, name) {
   return cookie ? cookie.slice(name.length + 1) : '';
 }
 
-async function getAuthenticatedUsername(request, env) {
+function getTutorAccounts(env) {
+  if (!env.TUTOR_ACCOUNTS) return [];
+  let accounts;
+  try {
+    accounts = JSON.parse(env.TUTOR_ACCOUNTS);
+  } catch {
+    throw new Error('TUTOR_ACCOUNTS harus berisi JSON array yang valid.');
+  }
+  if (!Array.isArray(accounts) || accounts.length > 100) {
+    throw new Error('TUTOR_ACCOUNTS harus berupa array dengan maksimal 100 akun.');
+  }
+
+  const usernames = new Set();
+  return accounts.map(account => {
+    if (!account || typeof account !== 'object' || Array.isArray(account) ||
+        typeof account.username !== 'string' || !account.username.trim() ||
+        account.username.length > 256 || typeof account.password !== 'string' ||
+        account.password.length < 16 || account.password.length > 1024 ||
+        !Number.isSafeInteger(account.tutorId) || account.tutorId <= 0 ||
+        usernames.has(account.username) || account.username === env.ADMIN_USERNAME) {
+      throw new Error('Setiap akun TUTOR_ACCOUNTS harus memiliki username unik, password minimal 16 karakter, dan tutorId positif.');
+    }
+    usernames.add(account.username);
+    return {
+      username: account.username,
+      password: account.password,
+      tutorId: account.tutorId
+    };
+  });
+}
+
+async function getAuthenticatedSession(request, env) {
   if (!hasAuthenticationConfig(env)) return null;
   const token = getCookie(request, SESSION_COOKIE_NAME);
   const separator = token.indexOf('.');
@@ -104,10 +137,21 @@ async function getAuthenticatedUsername(request, env) {
     if (!valid) return null;
 
     const session = JSON.parse(new TextDecoder().decode(decodeBase64Url(payload)));
-    if (session.username !== env.ADMIN_USERNAME || session.expiresAt <= Date.now()) {
-      return null;
+    if (typeof session.username !== 'string' || session.expiresAt <= Date.now()) return null;
+
+    const role = session.role || (session.username === env.ADMIN_USERNAME ? 'owner' : '');
+    if (role === 'owner' && session.username === env.ADMIN_USERNAME) {
+      return { username: session.username, role: 'owner' };
     }
-    return session.username;
+    if (role === 'tutor' && Number.isSafeInteger(session.tutorId) && session.tutorId > 0) {
+      const account = getTutorAccounts(env).find(item =>
+        item.username === session.username && item.tutorId === session.tutorId
+      );
+      if (account) {
+        return { username: session.username, role: 'tutor', tutorId: account.tutorId };
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -117,75 +161,7 @@ function sessionCookie(value, maxAge) {
   return `${SESSION_COOKIE_NAME}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
 }
 
-export async function onRequest(context) {
-  const { request, env } = context;
-  if (request.method !== 'POST') {
-    return jsonResponse({ error: 'Metode tidak diizinkan.' }, 405);
-  }
-  if (!isSameOrigin(request)) {
-    return jsonResponse({ error: 'Asal permintaan tidak diizinkan.' }, 403);
-  }
-
-  let payload;
-  try {
-    payload = await request.json();
-  } catch {
-    return jsonResponse({ error: 'Format permintaan tidak valid.' }, 400);
-  }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return jsonResponse({ error: 'Format permintaan tidak valid.' }, 400);
-  }
-
-  if (payload.action === 'login') {
-    if (!hasAuthenticationConfig(env)) {
-      return jsonResponse({ error: 'Login admin belum dikonfigurasi di Cloudflare.' }, 500);
-    }
-    const username = typeof payload.username === 'string' ? payload.username : '';
-    const password = typeof payload.password === 'string' ? payload.password : '';
-    if (username.length > 256 || password.length > 1024 ||
-        !constantTimeEqual(username, env.ADMIN_USERNAME) ||
-        !constantTimeEqual(password, env.ADMIN_PASSWORD)) {
-      return jsonResponse({ error: 'Username atau password salah.' }, 401);
-    }
-
-    const token = await createSessionToken(username, env.AUTH_SESSION_SECRET);
-    return jsonResponse(
-      { authenticated: true },
-      200,
-      { 'Set-Cookie': sessionCookie(token, SESSION_DURATION_SECONDS) }
-    );
-  }
-
-  if (payload.action === 'logout') {
-    return jsonResponse(
-      { authenticated: false },
-      200,
-      { 'Set-Cookie': sessionCookie('', 0) }
-    );
-  }
-
-  if (payload.action === 'checkSession') {
-    if (!hasAuthenticationConfig(env)) {
-      return jsonResponse({ error: 'Login admin belum dikonfigurasi di Cloudflare.' }, 500);
-    }
-    const username = await getAuthenticatedUsername(request, env);
-    if (!username) {
-      return jsonResponse({ error: 'Silakan login sebagai admin.' }, 401);
-    }
-    return jsonResponse({ authenticated: true, username });
-  }
-
-  const username = await getAuthenticatedUsername(request, env);
-  if (!username) {
-    return jsonResponse({ error: 'Sesi admin tidak ditemukan atau telah berakhir.' }, 401);
-  }
-  if (!env.GOOGLE_APPS_SCRIPT_URL || !env.LSA_BIMBEL_API_SECRET) {
-    return jsonResponse({ error: 'Konfigurasi API Google Sheets belum lengkap.' }, 500);
-  }
-  if (!['getDatabase', 'saveDatabase'].includes(payload.action)) {
-    return jsonResponse({ error: 'Aksi API tidak dikenal.' }, 400);
-  }
-
+async function forwardToAppsScript(payload, env) {
   try {
     const upstream = await fetch(env.GOOGLE_APPS_SCRIPT_URL, {
       method: 'POST',
@@ -210,4 +186,138 @@ export async function onRequest(context) {
   } catch (error) {
     return jsonResponse({ error: `Tidak dapat menghubungi Google Apps Script: ${error.message}` }, 502);
   }
+}
+
+export async function onRequest(context) {
+  const { request, env } = context;
+  if (request.method !== 'POST') {
+    return jsonResponse({ error: 'Metode tidak diizinkan.' }, 405);
+  }
+  if (!isSameOrigin(request)) {
+    return jsonResponse({ error: 'Asal permintaan tidak diizinkan.' }, 403);
+  }
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonResponse({ error: 'Format permintaan tidak valid.' }, 400);
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return jsonResponse({ error: 'Format permintaan tidak valid.' }, 400);
+  }
+
+  if (payload.action === 'login') {
+    if (!hasAuthenticationConfig(env)) {
+      return jsonResponse({ error: 'Login belum dikonfigurasi di Cloudflare.' }, 500);
+    }
+    const username = typeof payload.username === 'string' ? payload.username : '';
+    const password = typeof payload.password === 'string' ? payload.password : '';
+    if (username.length > 256 || password.length > 1024) {
+      return jsonResponse({ error: 'Username atau password salah.' }, 401);
+    }
+
+    let role = '';
+    let tutorId;
+    if (constantTimeEqual(username, env.ADMIN_USERNAME) &&
+        constantTimeEqual(password, env.ADMIN_PASSWORD)) {
+      role = 'owner';
+    } else {
+      let tutorAccounts;
+      try {
+        tutorAccounts = getTutorAccounts(env);
+      } catch (error) {
+        return jsonResponse({ error: error.message }, 500);
+      }
+      const account = tutorAccounts.find(item => item.username === username);
+      if (!account || !constantTimeEqual(password, account.password)) {
+        return jsonResponse({ error: 'Username atau password salah.' }, 401);
+      }
+      role = 'tutor';
+      tutorId = account.tutorId;
+    }
+
+    const token = await createSessionToken(username, env.AUTH_SESSION_SECRET, role, tutorId);
+    return jsonResponse(
+      { authenticated: true, role, ...(role === 'tutor' ? { tutorId } : {}) },
+      200,
+      { 'Set-Cookie': sessionCookie(token, SESSION_DURATION_SECONDS) }
+    );
+  }
+
+  if (payload.action === 'logout') {
+    return jsonResponse(
+      { authenticated: false },
+      200,
+      { 'Set-Cookie': sessionCookie('', 0) }
+    );
+  }
+
+  if (payload.action === 'checkSession') {
+    if (!hasAuthenticationConfig(env)) {
+      return jsonResponse({ error: 'Login belum dikonfigurasi di Cloudflare.' }, 500);
+    }
+    const session = await getAuthenticatedSession(request, env);
+    if (!session) {
+      return jsonResponse({ error: 'Silakan login kembali.' }, 401);
+    }
+    return jsonResponse({
+      authenticated: true,
+      username: session.username,
+      role: session.role,
+      ...(session.role === 'tutor' ? { tutorId: session.tutorId } : {})
+    });
+  }
+
+  if (['getAttendanceOptions', 'recordAttendance'].includes(payload.action)) {
+    if (!env.GOOGLE_APPS_SCRIPT_URL || !env.LSA_BIMBEL_API_SECRET) {
+      return jsonResponse({ error: 'Konfigurasi API Google Sheets belum lengkap.' }, 500);
+    }
+    if (typeof payload.token !== 'string' || !/^[a-f0-9]{48}$/.test(payload.token)) {
+      return jsonResponse({ error: 'Token presensi tidak valid.' }, 400);
+    }
+    if (payload.action === 'recordAttendance' &&
+        (!['tutor', 'student'].includes(payload.participantType) ||
+         !Number.isSafeInteger(payload.participantId) || payload.participantId <= 0 ||
+         !['checkIn', 'checkOut'].includes(payload.attendanceAction))) {
+      return jsonResponse({ error: 'Data presensi tidak valid.' }, 400);
+    }
+    return forwardToAppsScript(payload, env);
+  }
+
+  const session = await getAuthenticatedSession(request, env);
+  if (!session) {
+    return jsonResponse({ error: 'Sesi tidak ditemukan atau telah berakhir.' }, 401);
+  }
+  if (!env.GOOGLE_APPS_SCRIPT_URL || !env.LSA_BIMBEL_API_SECRET) {
+    return jsonResponse({ error: 'Konfigurasi API Google Sheets belum lengkap.' }, 500);
+  }
+  if (session.role === 'tutor') {
+    if (payload.action === 'getTutorPortalData') {
+      return forwardToAppsScript({
+        action: 'getTutorPortalData',
+        tutorId: session.tutorId
+      }, env);
+    }
+    if (payload.action === 'saveTutorJournal') {
+      if (!Number.isSafeInteger(payload.scheduleId) || payload.scheduleId <= 0 ||
+          typeof payload.material !== 'string' ||
+          !Array.isArray(payload.evaluations) || payload.evaluations.length < 1 ||
+          payload.evaluations.length > 50) {
+        return jsonResponse({ error: 'Data jurnal tidak valid.' }, 400);
+      }
+      return forwardToAppsScript({
+        ...payload,
+        action: 'saveTutorJournal',
+        tutorId: session.tutorId
+      }, env);
+    }
+    return jsonResponse({ error: 'Akses tentor tidak diizinkan untuk aksi ini.' }, 403);
+  }
+
+  if (!['getDatabase', 'saveDatabase'].includes(payload.action)) {
+    return jsonResponse({ error: 'Aksi API tidak dikenal.' }, 400);
+  }
+
+  return forwardToAppsScript(payload, env);
 }
