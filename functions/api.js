@@ -182,6 +182,12 @@ async function forwardToAppsScript(payload, env) {
           : `Respons Google Apps Script bukan JSON (HTTP ${upstream.status}, Content-Type: ${contentType}). Periksa URL dan deployment Web App.`;
       return jsonResponse({ error }, 502);
     }
+    if (responseData && responseData.error === 'Aksi API tidak dikenal.' &&
+        ['getTutorPortalData', 'saveTutorJournal'].includes(payload.action)) {
+      return jsonResponse({
+        error: 'Google Apps Script yang terhubung belum mendukung portal tentor. Perbarui Code.gs, lalu buka Deploy → Manage deployments → Edit, pilih New version, dan Deploy. Jika membuat deployment baru, perbarui GOOGLE_APPS_SCRIPT_URL di Cloudflare.'
+      }, 502);
+    }
     return jsonResponse(responseData, upstream.ok ? 200 : 502);
   } catch (error) {
     return jsonResponse({ error: `Tidak dapat menghubungi Google Apps Script: ${error.message}` }, 502);
