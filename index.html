@@ -39,17 +39,17 @@
 </head>
 <body class="bg-slate-50 text-slate-800 font-sans h-screen flex overflow-hidden">
 
-    <!-- Admin Login -->
+    <!-- Login -->
     <section id="login-screen" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-50 p-4">
         <div class="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200 p-8">
             <div class="flex flex-col items-center text-center mb-8">
                 <div class="w-14 h-14 rounded-2xl bg-primary-50 text-primary-600 flex items-center justify-center mb-4">
                     <i data-lucide="graduation-cap" class="w-8 h-8"></i>
                 </div>
-                <h1 class="text-2xl font-bold text-slate-800">Login Admin</h1>
-                <p class="text-sm text-slate-500 mt-2">Masuk untuk mengakses dashboard LSA BIMBEL.</p>
+                <h1 class="text-2xl font-bold text-slate-800">Login LSA BIMBEL</h1>
+                <p class="text-sm text-slate-500 mt-2">Masuk menggunakan akun Owner, Admin, atau Tentor.</p>
             </div>
-            <form id="login-form" onsubmit="submitAdminLogin(event)" class="space-y-5">
+            <form id="login-form" onsubmit="submitLogin(event)" class="space-y-5">
                 <div>
                     <label for="admin-username" class="block text-sm font-medium text-slate-700 mb-1.5">Username</label>
                     <input id="admin-username" name="username" type="text" autocomplete="username" required
@@ -66,12 +66,30 @@
                     Masuk
                 </button>
             </form>
-            <p class="text-xs text-slate-400 text-center mt-6">Akses khusus Owner / Admin</p>
+            <p class="text-xs text-slate-400 text-center mt-6">Akses tentor dibatasi pada profil, jadwal, dan jurnal miliknya.</p>
         </div>
     </section>
 
     <section id="public-attendance-screen" class="hidden fixed inset-0 z-[70] flex items-center justify-center bg-slate-50 p-4 overflow-y-auto">
         <div id="public-attendance-content" class="w-full max-w-lg bg-white rounded-2xl shadow-lg border border-slate-200 p-6"></div>
+    </section>
+
+    <section id="tutor-portal-screen" class="hidden fixed inset-0 z-30 overflow-y-auto bg-slate-50">
+        <header class="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 md:px-8">
+            <div class="flex items-center gap-3">
+                <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary-50 text-primary-600">
+                    <i data-lucide="graduation-cap" class="h-6 w-6"></i>
+                </div>
+                <div>
+                    <p class="font-bold text-slate-800">Portal Tentor</p>
+                    <p id="tutor-portal-header-name" class="text-xs text-slate-500">LSA BIMBEL</p>
+                </div>
+            </div>
+            <button type="button" onclick="logoutAdmin()" class="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+                <i data-lucide="log-out" class="h-4 w-4"></i> Keluar
+            </button>
+        </header>
+        <main id="tutor-portal-content" class="mx-auto max-w-5xl p-4 md:p-8"></main>
     </section>
 
     <!-- Mobile Sidebar Overlay -->
@@ -196,6 +214,7 @@
             payments: [],
             tutorPayments: []
         };
+        const initialDatabaseSeed = JSON.parse(JSON.stringify(db));
 
         // --- App State ---
         let currentState = {
@@ -209,6 +228,9 @@
         let selectedWAReportId = null;
         let publicAttendanceToken = '';
         let publicAttendanceOptions = null;
+        let authenticatedSession = null;
+        let tutorPortalData = null;
+        let tutorPortalPeriod = 'month';
 
         const routes = [
             { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
@@ -229,12 +251,12 @@
                 return;
             }
             callDatabaseApi({ action: 'checkSession' })
-                .then(() => openAdminApp())
+                .then(session => openAuthenticatedApp(session))
                 .catch(error => {
                     if (error.status === 401) {
                         showLoginScreen();
                     } else {
-                        showLoginScreen(error.message || 'Gagal memeriksa sesi admin.');
+                        showLoginScreen(error.message || 'Gagal memeriksa sesi.');
                     }
                 });
         }
@@ -420,16 +442,33 @@
         }
 
         function showLoginScreen(message) {
+            if (authenticatedSession) clearClientDatabase();
+            authenticatedSession = null;
+            tutorPortalData = null;
             document.getElementById('sidebar').classList.add('hidden');
             document.getElementById('app-shell').classList.add('hidden');
             document.getElementById('sidebar-overlay').classList.add('hidden');
+            document.getElementById('tutor-portal-screen').classList.add('hidden');
             document.getElementById('login-screen').classList.remove('hidden');
             const errorElement = document.getElementById('login-error');
             errorElement.textContent = message || '';
             errorElement.classList.toggle('hidden', !message);
         }
 
+        function clearClientDatabase() {
+            Object.keys(db).forEach(key => { db[key] = []; });
+            databaseVersion = 0;
+        }
+
+        function openAuthenticatedApp(session) {
+            if (session.role === 'tutor') return openTutorApp(session);
+            return openAdminApp(session);
+        }
+
         function openAdminApp() {
+            authenticatedSession = { role: 'owner' };
+            tutorPortalData = null;
+            document.getElementById('tutor-portal-screen').classList.add('hidden');
             document.getElementById('login-screen').classList.add('hidden');
             document.getElementById('sidebar').classList.remove('hidden');
             document.getElementById('app-shell').classList.remove('hidden');
@@ -444,6 +483,9 @@
                             db[key] = result.database[key];
                         });
                     } else {
+                        Object.keys(db).forEach(key => {
+                            db[key] = JSON.parse(JSON.stringify(initialDatabaseSeed[key]));
+                        });
                         return persistDatabase();
                     }
                 })
@@ -454,7 +496,7 @@
                 })
                 .catch(error => {
                     if (error.status === 401) {
-                        showLoginScreen('Sesi admin telah berakhir. Silakan login kembali.');
+                        showLoginScreen('Sesi telah berakhir. Silakan login kembali.');
                         return;
                     }
                     mainContent.innerHTML = `
@@ -468,7 +510,260 @@
                 });
         }
 
-        async function submitAdminLogin(event) {
+        async function openTutorApp(session) {
+            authenticatedSession = session;
+            tutorPortalData = null;
+            clearClientDatabase();
+            document.getElementById('sidebar').classList.add('hidden');
+            document.getElementById('app-shell').classList.add('hidden');
+            document.getElementById('sidebar-overlay').classList.add('hidden');
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('tutor-portal-screen').classList.remove('hidden');
+            document.getElementById('tutor-portal-content').innerHTML =
+                '<div class="py-16 text-center text-slate-500"><i data-lucide="loader-2" class="mx-auto mb-3 h-8 w-8 animate-spin"></i>Memuat profil tentor...</div>';
+            lucide.createIcons();
+            try {
+                tutorPortalData = await callDatabaseApi({ action: 'getTutorPortalData' });
+                if (!tutorPortalData.tutor || !Array.isArray(tutorPortalData.schedules) ||
+                    !Array.isArray(tutorPortalData.students) || !Array.isArray(tutorPortalData.journals)) {
+                    throw new Error('Respons portal tentor tidak valid.');
+                }
+                tutorPortalPeriod = 'month';
+                renderTutorPortal();
+            } catch (error) {
+                if (error.status === 401) return;
+                const content = document.getElementById('tutor-portal-content');
+                content.innerHTML = `
+                    <div class="mx-auto mt-10 max-w-2xl rounded-xl border border-red-200 bg-red-50 p-6 text-red-800">
+                        <h1 class="mb-2 font-bold">Gagal memuat portal tentor</h1>
+                        <p id="tutor-portal-error" class="text-sm"></p>
+                    </div>
+                `;
+                content.querySelector('#tutor-portal-error').textContent =
+                    error.message || 'Periksa konfigurasi Cloudflare dan Google Apps Script.';
+            }
+        }
+
+        function getTutorPeriodBounds(period) {
+            const today = new Date();
+            const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            const end = new Date(start);
+            if (period === 'week') {
+                const daysSinceMonday = (start.getDay() + 6) % 7;
+                start.setDate(start.getDate() - daysSinceMonday);
+                end.setTime(start.getTime());
+                end.setDate(start.getDate() + 6);
+            } else if (period === 'month') {
+                start.setDate(1);
+                end.setFullYear(start.getFullYear(), start.getMonth() + 1, 0);
+            }
+            return { start: getLocalDateString(start), end: getLocalDateString(end) };
+        }
+
+        function setTutorPortalPeriod(period) {
+            if (!['today', 'week', 'month'].includes(period)) return;
+            tutorPortalPeriod = period;
+            renderTutorPortal();
+        }
+
+        function renderTutorPortal() {
+            if (!tutorPortalData) return;
+            const { tutor, schedules, students, journals } = tutorPortalData;
+            const bounds = getTutorPeriodBounds(tutorPortalPeriod);
+            const visibleSchedules = schedules.filter(schedule =>
+                schedule.date >= bounds.start && schedule.date <= bounds.end
+            );
+            const completedCount = visibleSchedules.filter(schedule => schedule.status === 'Selesai').length;
+            const studentById = new Map(students.map(student => [String(student.id), student]));
+            const journalByKey = new Map(journals.map(journal =>
+                [`${journal.scheduleId}:${journal.studentId}`, journal]
+            ));
+            const periodLabels = { today: 'Hari ini', week: 'Minggu ini', month: 'Bulan ini' };
+            const periodButtons = Object.keys(periodLabels).map(period => `
+                <button type="button" onclick="setTutorPortalPeriod('${period}')"
+                    class="rounded-lg px-3 py-2 text-sm font-medium ${tutorPortalPeriod === period ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}">
+                    ${periodLabels[period]}
+                </button>
+            `).join('');
+            const scheduleCards = visibleSchedules.map(schedule => {
+                const participantIds = schedule.journalStudentIds && schedule.journalStudentIds.length
+                    ? schedule.journalStudentIds
+                    : schedule.studentIds;
+                const names = participantIds.map(id => {
+                    const student = studentById.get(String(id));
+                    return student ? student.name : 'Siswa tidak ditemukan';
+                });
+                const journalCount = participantIds.filter(id =>
+                    journalByKey.has(`${schedule.id}:${id}`)
+                ).length;
+                const canWriteJournal = schedule.status === 'Selesai' && participantIds.length > 0;
+                return `
+                    <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                                <div class="mb-1 flex flex-wrap items-center gap-2">
+                                    <h3 class="font-bold text-slate-800">${escapeHtml(schedule.subject || 'Sesi belajar')}</h3>
+                                    ${statusBadge(schedule.status)}
+                                </div>
+                                <p class="text-sm text-slate-600">${escapeHtml(schedule.date)} · ${escapeHtml(schedule.startTime || '--:--')}–${escapeHtml(schedule.endTime || '--:--')}</p>
+                                <p class="mt-1 text-sm text-slate-600">${escapeHtml(names.join(', ') || 'Belum ada siswa')}</p>
+                                ${schedule.room ? `<p class="mt-1 text-xs text-slate-500">Ruang ${escapeHtml(schedule.room)}</p>` : ''}
+                                <p class="mt-2 text-xs text-slate-500">Presensi masuk: ${escapeHtml(schedule.actualStartTime || '-')} · pulang: ${escapeHtml(schedule.actualEndTime || '-')}</p>
+                            </div>
+                            <div class="flex flex-col items-start gap-2 sm:items-end">
+                                ${canWriteJournal ? `
+                                    <span class="text-xs ${journalCount === participantIds.length ? 'text-green-700' : 'text-amber-700'}">
+                                        Jurnal ${journalCount}/${participantIds.length} siswa
+                                    </span>
+                                    <button type="button" onclick="showTutorJournalModal(${Number(schedule.id)})"
+                                        class="flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700">
+                                        <i data-lucide="book-open-check" class="h-4 w-4"></i>
+                                        ${journalCount ? 'Edit jurnal' : 'Isi jurnal'}
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                        ${schedule.lessonMaterial ? `<div class="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-600"><span class="font-semibold text-slate-700">Materi:</span> ${escapeHtml(schedule.lessonMaterial)}</div>` : ''}
+                    </article>
+                `;
+            }).join('');
+
+            document.getElementById('tutor-portal-header-name').textContent = tutor.name || 'Tentor';
+            document.getElementById('tutor-portal-content').innerHTML = `
+                <section class="mb-6 rounded-2xl bg-gradient-to-r from-primary-700 to-indigo-700 p-6 text-white shadow-sm">
+                    <div class="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <p class="text-sm text-white/75">Profil Tentor</p>
+                            <h1 class="mt-1 text-2xl font-bold">${escapeHtml(tutor.name)}</h1>
+                            <p class="mt-2 text-sm text-white/85">${escapeHtml(tutor.subject || 'Mata pelajaran belum diatur')}</p>
+                        </div>
+                        <div class="text-sm text-white/90">
+                            ${tutor.phone ? `<p>Telepon: ${escapeHtml(tutor.phone)}</p>` : ''}
+                            ${tutor.education ? `<p class="mt-1">Pendidikan: ${escapeHtml(tutor.education)}</p>` : ''}
+                        </div>
+                    </div>
+                </section>
+                <section class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                        <p class="text-sm text-slate-500">Sesi ${periodLabels[tutorPortalPeriod].toLowerCase()}</p>
+                        <p class="mt-2 text-3xl font-bold text-slate-800">${visibleSchedules.length}</p>
+                    </div>
+                    <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                        <p class="text-sm text-slate-500">Sesi selesai ${periodLabels[tutorPortalPeriod].toLowerCase()}</p>
+                        <p class="mt-2 text-3xl font-bold text-green-700">${completedCount}</p>
+                    </div>
+                </section>
+                <section>
+                    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-800">Jadwal Mengajar</h2>
+                            <p class="text-sm text-slate-500">${bounds.start === bounds.end ? bounds.start : `${bounds.start} – ${bounds.end}`}</p>
+                        </div>
+                        <div class="flex gap-1 rounded-xl bg-slate-100 p-1">${periodButtons}</div>
+                    </div>
+                    <div class="space-y-3">
+                        ${scheduleCards || '<div class="rounded-xl border border-dashed border-slate-300 bg-white py-12 text-center text-sm text-slate-500">Tidak ada jadwal pada periode ini.</div>'}
+                    </div>
+                </section>
+            `;
+            lucide.createIcons();
+        }
+
+        function showTutorJournalModal(scheduleId) {
+            if (!tutorPortalData) return;
+            const schedule = tutorPortalData.schedules.find(item => String(item.id) === String(scheduleId));
+            if (!schedule || schedule.status !== 'Selesai') {
+                showToast('Jurnal hanya dapat diisi untuk sesi selesai milik Anda.', 'error');
+                return;
+            }
+            const journalStudentIds = schedule.journalStudentIds && schedule.journalStudentIds.length
+                ? schedule.journalStudentIds
+                : schedule.studentIds;
+            if (!journalStudentIds.length) {
+                showToast('Tidak ada siswa yang dapat diisi jurnalnya.', 'error');
+                return;
+            }
+            const students = new Map(tutorPortalData.students.map(student => [String(student.id), student]));
+            const journals = new Map(tutorPortalData.journals
+                .filter(journal => String(journal.scheduleId) === String(schedule.id))
+                .map(journal => [String(journal.studentId), journal]));
+            const evaluationsHtml = journalStudentIds.map(studentId => {
+                const student = students.get(String(studentId));
+                const journal = journals.get(String(studentId)) || {};
+                const masteryValues = ['Belum memahami', 'Mulai memahami', 'Cukup memahami', 'Menguasai', 'Sangat menguasai'];
+                const mastery = masteryValues.includes(journal.mastery) ? journal.mastery : 'Cukup memahami';
+                return `
+                    <section class="rounded-xl border border-slate-200 p-4">
+                        <h3 class="mb-3 font-semibold text-slate-800">${escapeHtml(student ? student.name : 'Siswa')}</h3>
+                        <input type="hidden" class="tutor-journal-student-id" value="${escapeHtml(studentId)}">
+                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <label class="text-sm font-medium text-slate-700">
+                                Tingkat penguasaan
+                                <select class="tutor-journal-mastery mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                                    ${masteryValues.map(value => `<option ${value === mastery ? 'selected' : ''}>${value}</option>`).join('')}
+                                </select>
+                            </label>
+                            <label class="text-sm font-medium text-slate-700">
+                                Nilai evaluasi (opsional)
+                                <input type="number" min="0" max="100" step="1" class="tutor-journal-score mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" value="${journal.score === '' || journal.score == null ? '' : escapeHtml(journal.score)}">
+                            </label>
+                        </div>
+                        <label class="mt-3 block text-sm font-medium text-slate-700">
+                            Catatan perkembangan
+                            <textarea required rows="3" maxlength="2000" class="tutor-journal-notes mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="Contoh: siswa memahami pecahan, tetapi perlu latihan soal cerita">${escapeHtml(journal.notes || '')}</textarea>
+                        </label>
+                        <label class="mt-3 block text-sm font-medium text-slate-700">
+                            Rekomendasi latihan (opsional)
+                            <textarea rows="2" maxlength="2000" class="tutor-journal-recommendation mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="Latihan mandiri untuk sesi berikutnya">${escapeHtml(journal.recommendation || '')}</textarea>
+                        </label>
+                    </section>
+                `;
+            }).join('');
+            const html = `
+                <div class="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700">Materi yang diajarkan</label>
+                        <textarea id="tutor-journal-material" required maxlength="2000" rows="2" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="Bab atau materi yang diajarkan">${escapeHtml(schedule.lessonMaterial || '')}</textarea>
+                    </div>
+                    <p class="text-xs text-slate-500">Isi catatan setiap siswa yang hadir. Jurnal ini akan terlihat oleh Owner/Admin.</p>
+                    ${evaluationsHtml}
+                </div>
+            `;
+            openModal('Jurnal Sesi Belajar', html, 'Simpan Jurnal', () => {
+                saveTutorJournalFromModal(schedule.id);
+                return false;
+            });
+        }
+
+        async function saveTutorJournalFromModal(scheduleId) {
+            const material = document.getElementById('tutor-journal-material').value.trim();
+            const notesFields = Array.from(document.querySelectorAll('.tutor-journal-notes'));
+            if (!material || notesFields.some(field => !field.value.trim())) {
+                showToast('Materi dan catatan perkembangan setiap siswa wajib diisi.', 'error');
+                return;
+            }
+            const evaluations = Array.from(document.querySelectorAll('.tutor-journal-student-id')).map((field, index) => {
+                const scoreInput = document.querySelectorAll('.tutor-journal-score')[index];
+                const score = scoreInput.value === '' ? '' : Number(scoreInput.value);
+                return {
+                    studentId: Number(field.value),
+                    mastery: document.querySelectorAll('.tutor-journal-mastery')[index].value,
+                    notes: notesFields[index].value.trim(),
+                    recommendation: document.querySelectorAll('.tutor-journal-recommendation')[index].value.trim(),
+                    score
+                };
+            });
+            try {
+                await callDatabaseApi({ action: 'saveTutorJournal', scheduleId, material, evaluations });
+                closeModal();
+                showToast('Jurnal berhasil disimpan.');
+                await openTutorApp(authenticatedSession);
+            } catch (error) {
+                showToast(error.message || 'Jurnal gagal disimpan.', 'error');
+            }
+        }
+
+        async function submitLogin(event) {
             event.preventDefault();
             const submitButton = document.getElementById('login-submit-button');
             const errorElement = document.getElementById('login-error');
@@ -480,9 +775,9 @@
             errorElement.classList.add('hidden');
 
             try {
-                await callDatabaseApi({ action: 'login', username, password: passwordInput.value });
+                const session = await callDatabaseApi({ action: 'login', username, password: passwordInput.value });
                 passwordInput.value = '';
-                await openAdminApp();
+                await openAuthenticatedApp(session);
             } catch (error) {
                 errorElement.textContent = error.status === 401
                     ? 'Username atau password salah.'
@@ -526,7 +821,7 @@
                 error.status = response.status;
                 if (response.status === 401 &&
                     !['login', 'checkSession', 'logout'].includes(payload.action)) {
-                    showLoginScreen('Sesi admin telah berakhir. Silakan login kembali.');
+                    showLoginScreen('Sesi telah berakhir. Silakan login kembali.');
                 }
                 throw error;
             }
