@@ -740,44 +740,49 @@
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-slate-100">
-                                    ${db.students.map(s => `
+                                    ${db.students.map(s => {
+                                        const isActive = s.status === 'Aktif';
+                                        return `
                                         <tr class="hover:bg-slate-50 transition-colors">
                                             <td class="px-6 py-4">
                                                 <div class="flex items-center gap-3">
                                                     <div class="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center font-bold text-slate-600">
-                                                        ${s.name.charAt(0)}
+                                                        ${escapeHtml(String(s.name || '?').charAt(0))}
                                                     </div>
                                                     <div>
-                                                        <p class="font-semibold text-slate-800">${s.name}</p>
-                                                        <p class="text-xs text-slate-500">${s.code}</p>
+                                                        <p class="font-semibold text-slate-800">${escapeHtml(s.name)}</p>
+                                                        <p class="text-xs text-slate-500">${escapeHtml(s.code)}</p>
                                                     </div>
                                                 </div>
                                             </td>
                                             <td class="px-6 py-4">
-                                                <p class="text-slate-800">${s.school}</p>
-                                                <p class="text-xs text-slate-500">Kelas ${s.grade}</p>
+                                                <p class="text-slate-800">${escapeHtml(s.school)}</p>
+                                                <p class="text-xs text-slate-500">Kelas ${escapeHtml(s.grade)}</p>
                                             </td>
                                             <td class="px-6 py-4">
-                                                <p class="text-slate-800">${s.parentName}</p>
+                                                <p class="text-slate-800">${escapeHtml(s.parentName)}</p>
                                                 <div class="flex items-center gap-1 text-xs text-slate-500 mt-0.5">
-                                                    <i data-lucide="phone" class="w-3 h-3"></i> ${s.phone}
+                                                    <i data-lucide="phone" class="w-3 h-3"></i> ${escapeHtml(s.phone)}
                                                 </div>
                                             </td>
                                             <td class="px-6 py-4">
-                                                <span class="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-md text-xs font-medium border border-slate-200">${s.program}</span>
+                                                <span class="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-md text-xs font-medium border border-slate-200">${escapeHtml(s.program)}</span>
                                                 <p class="text-xs text-slate-500 mt-1">Bulanan: ${formatRupiah(s.monthlyFee)}</p>
                                             </td>
                                             <td class="px-6 py-4">
-                                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                                    <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> ${s.status}
+                                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${isActive ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}">
+                                                    <span class="w-1.5 h-1.5 rounded-full ${isActive ? 'bg-green-500' : 'bg-slate-400'}"></span> ${escapeHtml(s.status)}
                                                 </span>
                                             </td>
                                             <td class="px-6 py-4 text-right">
-                                                <button class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Detail"><i data-lucide="eye" class="w-4 h-4"></i></button>
+                                                <button onclick="showStudentDetailModal(${Number(s.id)}, 'month')" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Detail Profil"><i data-lucide="eye" class="w-4 h-4"></i></button>
                                                 <button onclick="showStudentMonthlyFeeModal(${s.id})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Atur tarif bulanan"><i data-lucide="wallet" class="w-4 h-4"></i></button>
+                                                <button onclick="showEditStudentModal(${Number(s.id)})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Edit siswa"><i data-lucide="edit-2" class="w-4 h-4"></i></button>
+                                                <button onclick="deleteStudent(${Number(s.id)})" class="p-1.5 text-slate-400 hover:text-red-600 rounded transition-colors" title="Hapus siswa"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
                                             </td>
                                         </tr>
-                                    `).join('')}
+                                        `;
+                                    }).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -786,7 +791,7 @@
             `;
         }
 
-        function getTutorProfilePeriod(period, referenceDate = new Date()) {
+        function getProfilePeriodRange(period, referenceDate = new Date()) {
             const today = getLocalDateString(referenceDate);
             const start = new Date(`${today}T12:00:00`);
             let end = new Date(start);
@@ -854,7 +859,7 @@
         }
 
         function getTutorPeriodSummary(tutor, period) {
-            const range = getTutorProfilePeriod(period);
+            const range = getProfilePeriodRange(period);
             const schedules = db.schedules
                 .filter(schedule =>
                     String(schedule.tutorId) === String(tutor.id) &&
@@ -927,6 +932,91 @@
                 missingCompletedEarningCount,
                 unpricedUpcomingCount,
                 payments
+            };
+        }
+
+        function getProfilePeriodMonths(range) {
+            const months = [];
+            const current = new Date(`${range.startDate}T12:00:00`);
+            const end = new Date(`${range.endDate}T12:00:00`);
+            current.setDate(1);
+            while (current <= end) {
+                months.push(`${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`);
+                current.setMonth(current.getMonth() + 1);
+            }
+            return months;
+        }
+
+        function getStudentPeriodSummary(student, period) {
+            const range = getProfilePeriodRange(period);
+            const schedules = db.schedules
+                .filter(schedule =>
+                    (schedule.studentIds || []).some(id => String(id) === String(student.id)) &&
+                    schedule.date >= range.startDate &&
+                    schedule.date <= range.endDate
+                )
+                .sort((a, b) =>
+                    String(a.date).localeCompare(String(b.date)) ||
+                    String(a.startTime).localeCompare(String(b.startTime))
+                );
+            const activeSchedules = schedules.filter(schedule => schedule.status !== 'Batal');
+            const completedSchedules = schedules.filter(schedule => schedule.status === 'Selesai');
+            const upcomingSchedules = schedules.filter(schedule =>
+                schedule.status === 'Dijadwalkan' || schedule.status === 'Berjalan'
+            );
+            const months = getProfilePeriodMonths(range);
+            const sessionMonths = new Set(activeSchedules.map(schedule => String(schedule.date || '').slice(0, 7)));
+            const invoices = db.invoices.filter(invoice =>
+                String(invoice.studentId) === String(student.id) &&
+                months.includes(String(invoice.billingMonth || invoice.dueDate || '').slice(0, 7))
+            );
+            const invoiceIds = new Set(invoices.map(invoice => String(invoice.id)));
+            const payments = db.payments
+                .filter(payment => {
+                    if (payment.invoiceId != null) return invoiceIds.has(String(payment.invoiceId));
+                    return String(payment.studentId) === String(student.id) &&
+                        months.includes(String(payment.date || '').slice(0, 7));
+                })
+                .sort((a, b) =>
+                    String(b.date).localeCompare(String(a.date)) ||
+                    Number(b.id) - Number(a.id)
+                );
+            const estimatedMonths = months
+                .filter(month => sessionMonths.has(month) || invoices.some(invoice =>
+                    String(invoice.billingMonth || invoice.dueDate || '').slice(0, 7) === month
+                ))
+                .map(month => {
+                    const monthInvoices = invoices.filter(invoice =>
+                        String(invoice.billingMonth || invoice.dueDate || '').slice(0, 7) === month
+                    );
+                    if (monthInvoices.length) {
+                        return {
+                            month,
+                            amount: monthInvoices.reduce((sum, invoice) => sum + (Number(invoice.amount) || 0), 0),
+                            billed: true
+                        };
+                    }
+                    const monthlyFee = Number(student.monthlyFee);
+                    return {
+                        month,
+                        amount: Number.isSafeInteger(monthlyFee) && monthlyFee > 0 ? monthlyFee : null,
+                        billed: false
+                    };
+                });
+
+            return {
+                range,
+                schedules,
+                activeSchedules,
+                completedSchedules,
+                upcomingSchedules,
+                invoices,
+                payments,
+                paidAmount: invoices.reduce((sum, invoice) => sum + getInvoicePaidAmount(invoice), 0),
+                dueAmount: invoices.reduce((sum, invoice) => sum + getInvoiceRemaining(invoice), 0),
+                estimatedAmount: estimatedMonths.reduce((sum, item) => sum + (item.amount || 0), 0),
+                unpricedMonthCount: estimatedMonths.filter(item => item.amount == null).length,
+                estimatedMonths
             };
         }
 
@@ -1889,9 +1979,10 @@
                     return false;
                 }
                 
+                const studentId = nextRecordId(db.students);
                 db.students.push({
-                    id: db.students.length + 1,
-                    code: `S-2600${db.students.length + 1}`,
+                    id: studentId,
+                    code: `S-2600${studentId}`,
                     name: name,
                     school: school,
                     grade: grade,
@@ -1905,6 +1996,403 @@
                 saveDatabaseAfterChange(`Data siswa ${name} berhasil disimpan.`);
                 if(currentState.route === 'students') navigate('students');
             });
+        }
+
+        function showEditStudentModal(studentId) {
+            const student = db.students.find(item => String(item.id) === String(studentId));
+            if (!student) {
+                showToast('Data siswa tidak ditemukan.', 'error');
+                return;
+            }
+
+            const currentProgram = student.program || 'Privat';
+            const currentStatus = student.status || 'Aktif';
+            const formHtml = `
+                <div class="space-y-4">
+                    <div>
+                        <label for="edit-student-name" class="block text-sm font-medium text-slate-700 mb-1">Nama lengkap</label>
+                        <input id="edit-student-name" value="${escapeHtml(student.name)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" required>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label for="edit-student-school" class="block text-sm font-medium text-slate-700 mb-1">Asal sekolah</label>
+                            <input id="edit-student-school" value="${escapeHtml(student.school)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                        <div>
+                            <label for="edit-student-grade" class="block text-sm font-medium text-slate-700 mb-1">Kelas</label>
+                            <input id="edit-student-grade" value="${escapeHtml(student.grade)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label for="edit-student-parent" class="block text-sm font-medium text-slate-700 mb-1">Nama orang tua/wali</label>
+                            <input id="edit-student-parent" value="${escapeHtml(student.parentName)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                        <div>
+                            <label for="edit-student-phone" class="block text-sm font-medium text-slate-700 mb-1">No. WhatsApp wali</label>
+                            <input id="edit-student-phone" value="${escapeHtml(student.phone)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label for="edit-student-program" class="block text-sm font-medium text-slate-700 mb-1">Program</label>
+                            <select id="edit-student-program" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                                ${!['Privat', 'Kelompok'].includes(currentProgram) ? `<option value="${escapeHtml(currentProgram)}" selected>${escapeHtml(currentProgram)}</option>` : ''}
+                                <option value="Privat" ${currentProgram === 'Privat' ? 'selected' : ''}>Privat</option>
+                                <option value="Kelompok" ${currentProgram === 'Kelompok' ? 'selected' : ''}>Kelompok</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="edit-student-status" class="block text-sm font-medium text-slate-700 mb-1">Status</label>
+                            <select id="edit-student-status" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                                <option value="Aktif" ${currentStatus === 'Aktif' ? 'selected' : ''}>Aktif</option>
+                                <option value="Nonaktif" ${currentStatus === 'Nonaktif' ? 'selected' : ''}>Nonaktif</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label for="edit-student-monthly-fee" class="block text-sm font-medium text-slate-700 mb-1">Tarif bulanan (Rp)</label>
+                        <input id="edit-student-monthly-fee" type="number" min="0" step="1" value="${Number(student.monthlyFee) || 0}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    </div>
+                </div>
+            `;
+
+            openModal(`Edit Data Siswa - ${escapeHtml(student.name)}`, formHtml, 'Simpan Perubahan', () => {
+                const name = document.getElementById('edit-student-name').value.trim();
+                const monthlyFee = Number(document.getElementById('edit-student-monthly-fee').value);
+                if (!name || !Number.isSafeInteger(monthlyFee) || monthlyFee < 0) {
+                    showToast('Nama wajib diisi dan tarif bulanan harus berupa nominal Rupiah positif atau 0.', 'error');
+                    return false;
+                }
+
+                const previous = { ...student };
+                student.name = name;
+                student.school = document.getElementById('edit-student-school').value.trim() || '-';
+                student.grade = document.getElementById('edit-student-grade').value.trim() || '-';
+                student.parentName = document.getElementById('edit-student-parent').value.trim() || '-';
+                student.phone = document.getElementById('edit-student-phone').value.trim() || '-';
+                student.program = document.getElementById('edit-student-program').value;
+                student.status = document.getElementById('edit-student-status').value;
+                student.monthlyFee = monthlyFee;
+
+                persistDatabase(`Data siswa ${name} berhasil diperbarui.`)
+                    .then(() => {
+                        if (currentState.route === 'students') navigate('students');
+                    })
+                    .catch(() => {
+                        Object.assign(student, previous);
+                        if (currentState.route === 'students') navigate('students');
+                    });
+            });
+        }
+
+        function deleteStudent(studentId) {
+            const student = db.students.find(item => String(item.id) === String(studentId));
+            if (!student) {
+                showToast('Data siswa tidak ditemukan.', 'error');
+                return;
+            }
+
+            const linkedSchedules = db.schedules.filter(schedule =>
+                (schedule.studentIds || []).some(id => String(id) === String(student.id)) ||
+                (schedule.attendanceRecords || []).some(record =>
+                    record.participantType === 'student' && String(record.participantId) === String(student.id)
+                )
+            );
+            const exclusiveScheduleIds = new Set(linkedSchedules
+                .filter(schedule => !(schedule.studentIds || []).some(id => String(id) !== String(student.id)))
+                .map(schedule => String(schedule.id)));
+            const relatedEarningIds = new Set(db.tutorEarnings
+                .filter(earning => exclusiveScheduleIds.has(String(earning.scheduleId)))
+                .map(earning => String(earning.id)));
+            const relatedInvoices = db.invoices.filter(invoice => String(invoice.studentId) === String(student.id));
+            const relatedInvoiceIds = new Set(relatedInvoices.map(invoice => String(invoice.id)));
+            const relatedJournalIds = new Set(db.journals
+                .filter(journal => String(journal.studentId) === String(student.id))
+                .map(journal => String(journal.id)));
+            const sharedScheduleCount = linkedSchedules.filter(schedule => !exclusiveScheduleIds.has(String(schedule.id))).length;
+
+            const confirmation = [
+                `Hapus permanen data siswa ${student.name}? Tindakan ini tidak dapat dibatalkan.`,
+                `Data tagihan, pembayaran siswa, jurnal, laporan WhatsApp, presensi, dan sesi khusus siswa beserta honor sesi terkait akan dihapus.`,
+                sharedScheduleCount
+                    ? `${sharedScheduleCount} jadwal bersama akan tetap ada untuk siswa lain; siswa ini dan presensinya akan dilepas.`
+                    : '',
+                relatedEarningIds.size
+                    ? 'Transaksi pengeluaran tentor yang sudah terjadi tetap tercatat, tetapi alokasinya ke honor sesi yang dihapus akan dilepas.'
+                    : ''
+            ].filter(Boolean).join('\n\n');
+            if (!window.confirm(confirmation)) return;
+
+            const snapshot = JSON.parse(JSON.stringify(db));
+            const previousSelectedWAReportId = selectedWAReportId;
+            const linkedScheduleIds = new Set(linkedSchedules.map(schedule => String(schedule.id)));
+            const removedScheduleIds = new Set(linkedSchedules
+                .filter(schedule => exclusiveScheduleIds.has(String(schedule.id)))
+                .map(schedule => String(schedule.id)));
+            const studentJournalIds = new Set([...relatedJournalIds]);
+
+            db.schedules = db.schedules
+                .filter(schedule => !removedScheduleIds.has(String(schedule.id)))
+                .map(schedule => {
+                    if (!linkedScheduleIds.has(String(schedule.id))) return schedule;
+                    const studentIds = (schedule.studentIds || [])
+                        .filter(id => String(id) !== String(student.id));
+                    const attendanceRecords = (schedule.attendanceRecords || []).filter(record =>
+                        !(record.participantType === 'student' && String(record.participantId) === String(student.id))
+                    );
+                    const hasJournal = db.journals.some(journal =>
+                        String(journal.scheduleId) === String(schedule.id) &&
+                        String(journal.studentId) !== String(student.id)
+                    );
+                    return { ...schedule, studentIds, attendanceRecords, hasJournal };
+                });
+            db.journals = db.journals.filter(journal => String(journal.studentId) !== String(student.id));
+            db.waReports = db.waReports.flatMap(report => {
+                if (String(report.studentId) === String(student.id)) return [];
+                const journalIds = Array.isArray(report.journalIds)
+                    ? report.journalIds
+                    : report.journalId == null ? [] : [report.journalId];
+                const remainingJournalIds = journalIds.filter(id => !studentJournalIds.has(String(id)));
+                if (remainingJournalIds.length === journalIds.length) return [report];
+                if (!remainingJournalIds.length) return [];
+                return [{
+                    ...report,
+                    journalIds: remainingJournalIds,
+                    journalId: remainingJournalIds[0]
+                }];
+            });
+            db.invoices = db.invoices.filter(invoice => String(invoice.studentId) !== String(student.id));
+            db.payments = db.payments.filter(payment =>
+                String(payment.studentId) !== String(student.id) &&
+                !relatedInvoiceIds.has(String(payment.invoiceId))
+            );
+            db.tutorEarnings = db.tutorEarnings.filter(earning =>
+                !exclusiveScheduleIds.has(String(earning.scheduleId))
+            );
+            db.tutorPayments = db.tutorPayments.map(payment => ({
+                ...payment,
+                allocations: (payment.allocations || []).filter(allocation =>
+                    !relatedEarningIds.has(String(allocation.earningId))
+                )
+            }));
+            db.students = db.students.filter(item => String(item.id) !== String(student.id));
+            if (!db.waReports.some(report => String(report.id) === String(selectedWAReportId))) {
+                selectedWAReportId = null;
+            }
+
+            persistDatabase(`Data siswa ${student.name} dan data terkait berhasil dihapus.`)
+                .then(() => {
+                    if (currentState.route === 'students') navigate('students');
+                })
+                .catch(() => {
+                    Object.keys(db).forEach(key => delete db[key]);
+                    Object.assign(db, snapshot);
+                    selectedWAReportId = previousSelectedWAReportId;
+                    if (currentState.route === 'students') navigate('students');
+                });
+        }
+
+        function showStudentDetailModal(studentId, period = 'month') {
+            const student = db.students.find(item => String(item.id) === String(studentId));
+            if (!student) {
+                showToast('Data siswa tidak ditemukan.', 'error');
+                return;
+            }
+
+            const summary = getStudentPeriodSummary(student, period);
+            const periodOptions = [
+                { id: 'today', label: 'Hari ini' },
+                { id: 'week', label: 'Minggu ini' },
+                { id: 'month', label: 'Bulan ini' }
+            ];
+            const schedulesHtml = summary.schedules.length
+                ? summary.schedules.map(schedule => {
+                    const tutor = db.tutors.find(item => String(item.id) === String(schedule.tutorId));
+                    const journal = db.journals.find(item =>
+                        String(item.scheduleId) === String(schedule.id) &&
+                        String(item.studentId) === String(student.id)
+                    );
+                    const statusClass = schedule.status === 'Selesai'
+                        ? 'bg-green-100 text-green-700'
+                        : schedule.status === 'Berjalan'
+                            ? 'bg-blue-100 text-blue-700'
+                            : schedule.status === 'Batal'
+                                ? 'bg-red-100 text-red-700'
+                                : 'bg-amber-100 text-amber-700';
+                    const statusLabel = schedule.status === 'Dijadwalkan'
+                        ? 'Terjadwal'
+                        : schedule.status || 'Status tidak diketahui';
+                    const attendance = (schedule.attendanceRecords || []).find(record =>
+                        record.participantType === 'student' &&
+                        String(record.participantId) === String(student.id)
+                    );
+
+                    return `
+                        <tr class="border-t border-slate-100 align-top">
+                            <td class="px-3 py-3">
+                                <p class="font-medium text-slate-800">${escapeHtml(formatScheduleDate(schedule.date))}</p>
+                                <p class="text-xs text-slate-500">${escapeHtml(schedule.startTime || '--:--')}–${escapeHtml(schedule.endTime || '--:--')}</p>
+                            </td>
+                            <td class="px-3 py-3">
+                                <p class="font-medium text-slate-800">${escapeHtml(schedule.subject || 'Sesi belajar')}</p>
+                                <p class="text-xs text-slate-500">${escapeHtml(tutor?.name || 'Tentor tidak diketahui')}${schedule.room ? ` · ${escapeHtml(schedule.room)}` : ''}</p>
+                            </td>
+                            <td class="px-3 py-3">
+                                <span class="rounded-full px-2 py-1 text-xs font-medium ${statusClass}">${escapeHtml(statusLabel)}</span>
+                                ${attendance?.checkInAt ? `<p class="mt-1 text-xs text-slate-500">Hadir · ${escapeHtml(new Date(attendance.checkInAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }))}</p>` : ''}
+                                ${journal ? '<p class="mt-1 text-xs text-green-700">Jurnal tersedia</p>' : ''}
+                            </td>
+                        </tr>
+                    `;
+                }).join('')
+                : '<tr><td colspan="3" class="px-3 py-8 text-center text-sm text-slate-500">Tidak ada jadwal belajar pada periode ini.</td></tr>';
+            const invoicesHtml = summary.invoices.length
+                ? summary.invoices.map(invoice => `
+                    <tr class="border-t border-slate-100">
+                        <td class="px-3 py-2 text-slate-700">${escapeHtml(invoice.invoiceNumber || `INV-${invoice.id}`)}</td>
+                        <td class="px-3 py-2 text-slate-600">${escapeHtml(invoice.dueDate || '-')}</td>
+                        <td class="px-3 py-2 text-right text-slate-700">${escapeHtml(formatRupiah(invoice.amount))}</td>
+                        <td class="px-3 py-2 text-right text-green-700">${escapeHtml(formatRupiah(getInvoicePaidAmount(invoice)))}</td>
+                        <td class="px-3 py-2 text-right font-medium ${getInvoiceRemaining(invoice) ? 'text-amber-800' : 'text-green-700'}">${escapeHtml(formatRupiah(getInvoiceRemaining(invoice)))}</td>
+                    </tr>
+                `).join('')
+                : '<tr><td colspan="5" class="px-3 py-5 text-center text-sm text-slate-500">Belum ada invoice pada bulan yang tercakup di periode ini.</td></tr>';
+            const paymentsHtml = summary.payments.length
+                ? summary.payments.map(payment => `
+                    <tr class="border-t border-slate-100">
+                        <td class="px-3 py-2 text-slate-600">${escapeHtml(payment.date || '-')}</td>
+                        <td class="px-3 py-2 text-slate-600">${escapeHtml(payment.receiptNumber || `BKM-${payment.id}`)}</td>
+                        <td class="px-3 py-2 text-slate-600">${escapeHtml(payment.invoiceNumber || '-')}</td>
+                        <td class="px-3 py-2 text-right font-medium text-slate-800">${escapeHtml(formatRupiah(payment.amount))}</td>
+                        <td class="px-3 py-2 text-right">${payment.id != null ? `<button onclick="printStudentReceipt(${Number(payment.id)})" class="text-primary-600 hover:underline">Cetak</button>` : ''}</td>
+                    </tr>
+                `).join('')
+                : '<tr><td colspan="5" class="px-3 py-5 text-center text-sm text-slate-500">Belum ada transaksi pembayaran untuk tagihan pada bulan ini.</td></tr>';
+            const identityFields = [
+                ['Kode siswa', student.code],
+                ['Asal sekolah', student.school],
+                ['Kelas', student.grade],
+                ['Orang tua/wali', student.parentName],
+                ['No. WhatsApp wali', student.phone],
+                ['Program', student.program],
+                ['Status', student.status],
+                ['Tarif bulanan', formatRupiah(student.monthlyFee)]
+            ];
+            const missingTariffMonths = summary.estimatedMonths
+                .filter(item => item.amount == null)
+                .map(item => item.month);
+            const html = `
+                <div class="mb-5">
+                    <h2 class="text-lg font-bold text-slate-800">${escapeHtml(student.name)}</h2>
+                    <p class="text-sm text-slate-500">${escapeHtml(student.code || 'Kode belum tersedia')} · Profil siswa</p>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-5">
+                    ${identityFields.map(([label, value]) => `
+                        <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">${escapeHtml(label)}</p>
+                            <p class="mt-1 text-sm font-medium text-slate-800">${escapeHtml(value || '-')}</p>
+                        </div>
+                    `).join('')}
+                </div>
+
+                <div class="flex gap-2 overflow-x-auto mb-3">
+                    ${periodOptions.map(option => `
+                        <button onclick="showStudentDetailModal(${Number(student.id)}, '${option.id}')"
+                            class="shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${period === option.id ? 'bg-primary-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+                            ${option.label}
+                        </button>
+                    `).join('')}
+                </div>
+                <p class="text-xs text-slate-500 mb-4">${escapeHtml(summary.range.label)}</p>
+
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+                    <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p class="text-xs text-slate-500">Jumlah sesi (tidak termasuk batal)</p>
+                        <p class="mt-1 text-lg font-bold text-slate-800">${summary.activeSchedules.length}</p>
+                        <p class="text-xs text-slate-500">${summary.upcomingSchedules.filter(schedule => schedule.status === 'Dijadwalkan').length} terjadwal · ${summary.upcomingSchedules.filter(schedule => schedule.status === 'Berjalan').length} berjalan</p>
+                    </div>
+                    <div class="rounded-lg border border-green-200 bg-green-50 p-3">
+                        <p class="text-xs text-green-700">Sesi selesai</p>
+                        <p class="mt-1 text-lg font-bold text-green-800">${summary.completedSchedules.length}</p>
+                        <p class="text-xs text-green-700">${summary.schedules.filter(schedule => schedule.status === 'Batal').length} sesi batal</p>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white p-3">
+                        <p class="text-xs text-slate-500">Sudah dibayar</p>
+                        <p class="mt-1 text-lg font-bold text-green-700">${escapeHtml(formatRupiah(summary.paidAmount))}</p>
+                        <p class="text-xs text-slate-500">untuk invoice bulan pada periode</p>
+                    </div>
+                    <div class="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                        <p class="text-xs text-amber-800">Harus dibayar (sisa tagihan)</p>
+                        <p class="mt-1 text-lg font-bold text-amber-900">${escapeHtml(formatRupiah(summary.dueAmount))}</p>
+                        <p class="text-xs text-amber-800">invoice yang belum lunas</p>
+                    </div>
+                    <div class="rounded-lg border border-indigo-200 bg-indigo-50 p-3 col-span-2">
+                        <p class="text-xs text-indigo-800">Estimasi tagihan untuk sesi selesai & terjadwal</p>
+                        <p class="mt-1 text-lg font-bold text-indigo-900">${escapeHtml(formatRupiah(summary.estimatedAmount))}</p>
+                        <p class="text-xs text-indigo-800">Tarif bulanan dihitung satu kali per bulan yang memiliki jadwal.</p>
+                    </div>
+                </div>
+                ${missingTariffMonths.length ? `<p class="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Tarif bulanan belum diatur untuk ${escapeHtml(missingTariffMonths.join(', '))}; estimasi belum mencakup bulan tersebut.</p>` : ''}
+
+                <div class="mb-5">
+                    <h3 class="font-semibold text-slate-800 mb-2">Jadwal belajar</h3>
+                    <div class="overflow-x-auto rounded-lg border border-slate-200">
+                        <table class="w-full min-w-[560px] text-left text-xs">
+                            <thead class="bg-slate-50 text-slate-500">
+                                <tr>
+                                    <th class="px-3 py-2 font-medium">Tanggal / waktu</th>
+                                    <th class="px-3 py-2 font-medium">Mata pelajaran / tentor</th>
+                                    <th class="px-3 py-2 font-medium">Status / presensi</th>
+                                </tr>
+                            </thead>
+                            <tbody>${schedulesHtml}</tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="mb-5">
+                    <h3 class="font-semibold text-slate-800 mb-2">Tagihan pada periode</h3>
+                    <div class="overflow-x-auto rounded-lg border border-slate-200">
+                        <table class="w-full min-w-[620px] text-left text-xs">
+                            <thead class="bg-slate-50 text-slate-500">
+                                <tr>
+                                    <th class="px-3 py-2 font-medium">No. invoice</th>
+                                    <th class="px-3 py-2 font-medium">Jatuh tempo</th>
+                                    <th class="px-3 py-2 text-right font-medium">Tagihan</th>
+                                    <th class="px-3 py-2 text-right font-medium">Terbayar</th>
+                                    <th class="px-3 py-2 text-right font-medium">Sisa</th>
+                                </tr>
+                            </thead>
+                            <tbody>${invoicesHtml}</tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="font-semibold text-slate-800 mb-2">Riwayat pembayaran</h3>
+                    <div class="overflow-x-auto rounded-lg border border-slate-200">
+                        <table class="w-full min-w-[620px] text-left text-xs">
+                            <thead class="bg-slate-50 text-slate-500">
+                                <tr>
+                                    <th class="px-3 py-2 font-medium">Tanggal</th>
+                                    <th class="px-3 py-2 font-medium">No. bukti</th>
+                                    <th class="px-3 py-2 font-medium">Invoice</th>
+                                    <th class="px-3 py-2 text-right font-medium">Nominal</th>
+                                    <th class="px-3 py-2 text-right font-medium">Bukti</th>
+                                </tr>
+                            </thead>
+                            <tbody>${paymentsHtml}</tbody>
+                        </table>
+                    </div>
+                </div>
+                <p class="mt-3 text-xs text-slate-500">Ringkasan pembayaran mengikuti invoice pada bulan yang tercakup. Karena tarif siswa bersifat bulanan, estimasi tagihan tidak dikalikan per jumlah sesi.</p>
+            `;
+
+            openModal('Profil Siswa', html, 'Tutup', () => {
+                document.getElementById('modal-footer').children[0].style.display = 'block';
+            });
+            document.getElementById('modal-footer').children[0].style.display = 'none';
         }
 
         function showStudentMonthlyFeeModal(studentId) {
