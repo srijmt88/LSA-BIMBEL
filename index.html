@@ -786,6 +786,150 @@
             `;
         }
 
+        function getTutorProfilePeriod(period, referenceDate = new Date()) {
+            const today = getLocalDateString(referenceDate);
+            const start = new Date(`${today}T12:00:00`);
+            let end = new Date(start);
+            let label = 'Hari ini';
+
+            if (period === 'week') {
+                const daysSinceMonday = (start.getDay() + 6) % 7;
+                start.setDate(start.getDate() - daysSinceMonday);
+                end = new Date(start);
+                end.setDate(end.getDate() + 6);
+                label = 'Minggu ini';
+            } else if (period === 'month') {
+                start.setDate(1);
+                end = new Date(start.getFullYear(), start.getMonth() + 1, 0, 12);
+                label = 'Bulan ini';
+            }
+
+            const startDate = getLocalDateString(start);
+            const endDate = getLocalDateString(end);
+            return {
+                startDate,
+                endDate,
+                label: startDate === endDate
+                    ? `${label} · ${formatScheduleDate(startDate)}`
+                    : `${label} · ${formatScheduleDate(startDate)} – ${formatScheduleDate(endDate)}`
+            };
+        }
+
+        function getTutorScheduleHonorEstimate(tutor, schedule, useAttendance = false) {
+            const rule = tutor?.feeRules;
+            if (!rule) return null;
+
+            let amount = 0;
+            if (rule.type === 'Persentase') {
+                amount = Number(schedule.manualTutorFee);
+            } else if (rule.type === 'Per Pertemuan') {
+                amount = Number(rule.value);
+            } else if (rule.type === 'Per Siswa') {
+                const studentCount = useAttendance
+                    ? (schedule.attendanceRecords || []).filter(record =>
+                        record.participantType === 'student' && record.checkInAt
+                    ).length
+                    : (schedule.studentIds || []).length;
+                amount = Number(rule.value) * studentCount;
+            } else if (rule.type === 'Per Jam') {
+                let durationMinutes = 0;
+                const actualStart = schedule.actualStartAt ? new Date(schedule.actualStartAt).getTime() : 0;
+                const actualEnd = schedule.actualEndAt ? new Date(schedule.actualEndAt).getTime() : 0;
+                if (useAttendance && actualStart && actualEnd > actualStart) {
+                    durationMinutes = (actualEnd - actualStart) / 60000;
+                } else {
+                    const [startHour, startMinute] = String(schedule.startTime || '').split(':').map(Number);
+                    const [endHour, endMinute] = String(schedule.endTime || '').split(':').map(Number);
+                    if (![startHour, startMinute, endHour, endMinute].every(Number.isFinite)) return null;
+                    durationMinutes = endHour * 60 + endMinute - (startHour * 60 + startMinute);
+                }
+                amount = Number(rule.value) * durationMinutes / 60;
+            } else {
+                return null;
+            }
+
+            return Number.isSafeInteger(Math.round(amount)) && amount > 0
+                ? Math.round(amount)
+                : null;
+        }
+
+        function getTutorPeriodSummary(tutor, period) {
+            const range = getTutorProfilePeriod(period);
+            const schedules = db.schedules
+                .filter(schedule =>
+                    String(schedule.tutorId) === String(tutor.id) &&
+                    schedule.date >= range.startDate &&
+                    schedule.date <= range.endDate
+                )
+                .sort((a, b) =>
+                    String(a.date).localeCompare(String(b.date)) ||
+                    String(a.startTime).localeCompare(String(b.startTime))
+                );
+            const activeSchedules = schedules.filter(schedule => schedule.status !== 'Batal');
+            const completedSchedules = schedules.filter(schedule => schedule.status === 'Selesai');
+            const upcomingSchedules = schedules.filter(schedule =>
+                schedule.status === 'Dijadwalkan' || schedule.status === 'Berjalan'
+            );
+            const earningsBySchedule = new Map(
+                db.tutorEarnings
+                    .filter(earning => String(earning.tutorId) === String(tutor.id))
+                    .map(earning => [String(earning.scheduleId), earning])
+            );
+            const completedEarnings = completedSchedules
+                .map(schedule => earningsBySchedule.get(String(schedule.id)))
+                .filter(Boolean);
+
+            let completedAmount = 0;
+            let unpricedCompletedCount = 0;
+            let missingCompletedEarningCount = 0;
+            completedSchedules.forEach(schedule => {
+                const earning = earningsBySchedule.get(String(schedule.id));
+                if (!earning) missingCompletedEarningCount++;
+                const amount = earning
+                    ? Number(earning.amount)
+                    : getTutorScheduleHonorEstimate(tutor, schedule, true);
+                if (Number.isSafeInteger(amount) && amount >= 0) completedAmount += amount;
+                else unpricedCompletedCount++;
+            });
+
+            let upcomingEstimate = 0;
+            let unpricedUpcomingCount = 0;
+            upcomingSchedules.forEach(schedule => {
+                const amount = getTutorScheduleHonorEstimate(tutor, schedule);
+                if (amount == null) unpricedUpcomingCount++;
+                else upcomingEstimate += amount;
+            });
+
+            const payments = db.tutorPayments
+                .filter(payment =>
+                    String(payment.tutorId) === String(tutor.id) &&
+                    payment.date >= range.startDate &&
+                    payment.date <= range.endDate
+                )
+                .sort((a, b) =>
+                    String(b.date).localeCompare(String(a.date)) ||
+                    Number(b.id) - Number(a.id)
+                );
+
+            return {
+                range,
+                schedules,
+                activeSchedules,
+                completedSchedules,
+                upcomingSchedules,
+                earningsBySchedule,
+                completedAmount,
+                paidAmount: completedEarnings.reduce((sum, earning) => sum + getEarningPaidAmount(earning), 0),
+                dueAmount: completedEarnings.reduce((sum, earning) => sum + getEarningRemaining(earning), 0),
+                upcomingEstimate,
+                allSessionsEstimate: completedAmount + upcomingEstimate,
+                unpricedCompletedCount,
+                missingCompletedEarningCount,
+                unpricedUpcomingCount,
+                payments
+            };
+        }
+
         function renderTutors() {
             return `
                 <div class="fade-in max-w-7xl mx-auto h-full flex flex-col">
@@ -824,8 +968,7 @@
                                 </thead>
                                 <tbody class="divide-y divide-slate-100">
                                     ${db.tutors.map(t => {
-                                        // Mock sesi bulan ini
-                                        const sessionsCount = db.schedules.filter(s => s.tutorId === t.id).length * 4; 
+                                        const monthSummary = getTutorPeriodSummary(t, 'month');
                                         return `
                                         <tr class="hover:bg-slate-50 transition-colors">
                                             <td class="px-6 py-4">
@@ -847,7 +990,8 @@
                                                 </div>
                                             </td>
                                             <td class="px-6 py-4">
-                                                <p class="text-slate-800 font-medium">${sessionsCount} Sesi</p>
+                                                <p class="text-slate-800 font-medium">${monthSummary.activeSchedules.length} Sesi</p>
+                                                <p class="text-xs text-slate-500 mt-1">${monthSummary.completedSchedules.length} selesai</p>
                                             </td>
                                             <td class="px-6 py-4">
                                                 <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${t.status === 'Aktif' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}">
@@ -1841,62 +1985,196 @@
             });
         }
 
-        function showTutorDetailModal(tutorId) {
-            const tutor = db.tutors.find(t => t.id === tutorId);
-            const sessionsCount = db.schedules.filter(s => s.tutorId === tutor.id).length * 4; // Mock perhitungan sesi
-            
+        function showTutorDetailModal(tutorId, period = 'month') {
+            const tutor = db.tutors.find(item => String(item.id) === String(tutorId));
+            if (!tutor) {
+                showToast('Data tentor tidak ditemukan.', 'error');
+                return;
+            }
+
+            const summary = getTutorPeriodSummary(tutor, period);
+            const periodOptions = [
+                { id: 'today', label: 'Hari ini' },
+                { id: 'week', label: 'Minggu ini' },
+                { id: 'month', label: 'Bulan ini' }
+            ];
+            const schedulesHtml = summary.schedules.length
+                ? summary.schedules.map(schedule => {
+                    const students = (schedule.studentIds || [])
+                        .map(studentId => db.students.find(student => String(student.id) === String(studentId))?.name)
+                        .filter(Boolean);
+                    const earning = summary.earningsBySchedule.get(String(schedule.id));
+                    const estimate = getTutorScheduleHonorEstimate(
+                        tutor,
+                        schedule,
+                        schedule.status === 'Selesai'
+                    );
+                    let honorText = 'Honor belum dapat dihitung';
+                    if (schedule.status === 'Batal') {
+                        honorText = 'Tidak dihitung';
+                    } else if (schedule.status === 'Selesai' && earning) {
+                        honorText = `${formatRupiah(earning.amount)} · dibayar ${formatRupiah(getEarningPaidAmount(earning))} · sisa ${formatRupiah(getEarningRemaining(earning))}`;
+                    } else if (schedule.status === 'Selesai' && estimate != null) {
+                        honorText = `${formatRupiah(estimate)} · honor belum tercatat`;
+                    } else if (estimate != null) {
+                        honorText = `Estimasi ${formatRupiah(estimate)}`;
+                    }
+
+                    const statusClass = schedule.status === 'Selesai'
+                        ? 'bg-green-100 text-green-700'
+                        : schedule.status === 'Berjalan'
+                            ? 'bg-blue-100 text-blue-700'
+                            : schedule.status === 'Batal'
+                                ? 'bg-red-100 text-red-700'
+                                : 'bg-amber-100 text-amber-700';
+                    const statusLabel = schedule.status === 'Dijadwalkan'
+                        ? 'Terjadwal'
+                        : schedule.status || 'Status tidak diketahui';
+
+                    return `
+                        <tr class="border-t border-slate-100 align-top">
+                            <td class="px-3 py-3">
+                                <p class="font-medium text-slate-800">${escapeHtml(formatScheduleDate(schedule.date))}</p>
+                                <p class="text-xs text-slate-500">${escapeHtml(schedule.startTime || '--:--')}–${escapeHtml(schedule.endTime || '--:--')}</p>
+                            </td>
+                            <td class="px-3 py-3">
+                                <p class="font-medium text-slate-800">${escapeHtml(schedule.subject || 'Sesi belajar')}</p>
+                                <p class="text-xs text-slate-500">${escapeHtml(students.join(', ') || 'Belum ada siswa')}</p>
+                            </td>
+                            <td class="px-3 py-3">
+                                <span class="rounded-full px-2 py-1 text-xs font-medium ${statusClass}">${escapeHtml(statusLabel)}</span>
+                            </td>
+                            <td class="px-3 py-3 text-right text-xs text-slate-600">${escapeHtml(honorText)}</td>
+                        </tr>
+                    `;
+                }).join('')
+                : '<tr><td colspan="4" class="px-3 py-8 text-center text-sm text-slate-500">Tidak ada jadwal tentor pada periode ini.</td></tr>';
+            const paymentHistory = summary.payments.length
+                ? summary.payments.map(payment => `
+                    <tr class="border-t border-slate-100">
+                        <td class="px-3 py-2 text-slate-600">${escapeHtml(formatScheduleDate(payment.date))}</td>
+                        <td class="px-3 py-2 text-slate-600">${escapeHtml(payment.receiptNumber || `KLR-${payment.id}`)}</td>
+                        <td class="px-3 py-2 text-right font-medium text-slate-800">${escapeHtml(formatRupiah(payment.amount))}</td>
+                    </tr>
+                `).join('')
+                : '<tr><td colspan="3" class="px-3 py-5 text-center text-sm text-slate-500">Belum ada pembayaran honor pada periode ini.</td></tr>';
+            const unpricedCount = summary.unpricedCompletedCount + summary.unpricedUpcomingCount;
+            const honorWarnings = [];
+            if (summary.missingCompletedEarningCount) {
+                honorWarnings.push(`${summary.missingCompletedEarningCount} sesi selesai belum memiliki catatan honor; nominal tertunggak belum lengkap.`);
+            }
+            if (unpricedCount) {
+                honorWarnings.push(`${unpricedCount} sesi belum dapat dihitung nominalnya. Atur fee tentor atau nominal honor manual pada sesi bertipe Persentase.`);
+            }
+            const feeRuleLabel = tutor.feeRules
+                ? `${escapeHtml(tutor.feeRules.type)}: ${tutor.feeRules.type === 'Persentase'
+                    ? `${escapeHtml(tutor.feeRules.value)}%`
+                    : escapeHtml(formatRupiah(tutor.feeRules.value))}`
+                : 'Belum ada aturan fee';
             const html = `
-                <div class="flex items-start gap-4 mb-6">
-                    <div class="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center font-bold text-emerald-700 text-2xl shrink-0">
-                        ${tutor.name.charAt(0)}
+                <div class="flex items-start gap-4 mb-5">
+                    <div class="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center font-bold text-emerald-700 text-xl shrink-0">
+                        ${escapeHtml(tutor.name.charAt(0))}
                     </div>
-                    <div>
-                        <h2 class="text-lg font-bold text-slate-800">${tutor.name}</h2>
-                        <p class="text-sm text-slate-500">${tutor.education || 'Pendidikan belum diisi'}</p>
-                        <div class="flex items-center gap-2 mt-2">
+                    <div class="min-w-0">
+                        <h2 class="text-lg font-bold text-slate-800">${escapeHtml(tutor.name)}</h2>
+                        <p class="text-sm text-slate-500">${escapeHtml(tutor.education || 'Pendidikan belum diisi')}</p>
+                        <div class="flex flex-wrap items-center gap-2 mt-2">
                             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${tutor.status === 'Aktif' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}">
-                                ${tutor.status}
+                                ${escapeHtml(tutor.status)}
                             </span>
-                            <span class="text-xs text-slate-500 flex items-center gap-1"><i data-lucide="phone" class="w-3 h-3"></i> ${tutor.phone}</span>
+                            <span class="text-xs text-slate-500">${escapeHtml(tutor.phone || 'Nomor telepon belum diisi')}</span>
+                            <span class="text-xs text-slate-500">${escapeHtml(tutor.subject || 'Mata pelajaran belum diisi')}</span>
                         </div>
                     </div>
                 </div>
-                
-                <div class="border-b border-slate-200 mb-4">
-                    <nav class="-mb-px flex gap-4 text-sm font-medium">
-                        <a href="#" class="border-b-2 border-primary-500 text-primary-600 pb-2 px-1">Ringkasan</a>
-                        <a href="#" class="border-b-2 border-transparent text-slate-500 hover:text-slate-700 pb-2 px-1 cursor-not-allowed" title="Dalam pengembangan">Jadwal</a>
-                        <a href="#" class="border-b-2 border-transparent text-slate-500 hover:text-slate-700 pb-2 px-1 cursor-not-allowed" title="Dalam pengembangan">Riwayat Honor</a>
-                    </nav>
+
+                <div class="flex gap-2 overflow-x-auto mb-4">
+                    ${periodOptions.map(option => `
+                        <button onclick="showTutorDetailModal(${Number(tutor.id)}, '${option.id}')"
+                            class="shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${period === option.id ? 'bg-primary-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+                            ${option.label}
+                        </button>
+                    `).join('')}
                 </div>
-                
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Mata Pelajaran</p>
-                        <p class="text-sm text-slate-800 font-medium">${tutor.subject}</p>
+                <p class="text-xs text-slate-500 mb-4">${escapeHtml(summary.range.label)}</p>
+
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                    <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p class="text-xs text-slate-500">Jumlah sesi (tidak termasuk batal)</p>
+                        <p class="mt-1 text-lg font-bold text-slate-800">${summary.activeSchedules.length}</p>
+                        <p class="text-xs text-slate-500">${summary.upcomingSchedules.filter(schedule => schedule.status === 'Dijadwalkan').length} terjadwal · ${summary.upcomingSchedules.filter(schedule => schedule.status === 'Berjalan').length} berjalan</p>
                     </div>
-                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Total Sesi (Bulan Ini)</p>
-                        <p class="text-sm text-slate-800 font-medium">${sessionsCount} Sesi</p>
+                    <div class="rounded-lg border border-green-200 bg-green-50 p-3">
+                        <p class="text-xs text-green-700">Sesi selesai</p>
+                        <p class="mt-1 text-lg font-bold text-green-800">${summary.completedSchedules.length}</p>
+                        <p class="text-xs text-green-700">${summary.schedules.filter(schedule => schedule.status === 'Batal').length} sesi batal</p>
                     </div>
-                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-100 col-span-2">
-                        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Aturan Fee Aktif</p>
-                        <p class="text-sm text-slate-800 font-medium">
-                            ${tutor.feeRules ? `${tutor.feeRules.type}: ${tutor.feeRules.type === 'Persentase' ? tutor.feeRules.value + '%' : 'Rp ' + tutor.feeRules.value.toLocaleString('id-ID')}` : 'Belum ada aturan yang diatur'}
-                        </p>
+                    <div class="rounded-lg border border-slate-200 bg-white p-3">
+                        <p class="text-xs text-slate-500">Honor sudah dibayar*</p>
+                        <p class="mt-1 text-lg font-bold text-slate-800">${escapeHtml(formatRupiah(summary.paidAmount))}</p>
+                        <p class="text-xs text-slate-500">dialokasikan ke sesi periode ini</p>
+                    </div>
+                    <div class="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                        <p class="text-xs text-amber-800">Honor harus dibayar*</p>
+                        <p class="mt-1 text-lg font-bold text-amber-900">${escapeHtml(formatRupiah(summary.dueAmount))}</p>
+                        <p class="text-xs text-amber-800">sisa dari sesi yang selesai</p>
+                    </div>
+                    <div class="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                        <p class="text-xs text-blue-800">Estimasi sesi terjadwal / berjalan</p>
+                        <p class="mt-1 text-lg font-bold text-blue-900">${escapeHtml(formatRupiah(summary.upcomingEstimate))}</p>
+                    </div>
+                    <div class="rounded-lg border border-indigo-200 bg-indigo-50 p-3 col-span-2">
+                        <p class="text-xs text-indigo-800">Estimasi honor seluruh sesi periode ini</p>
+                        <p class="mt-1 text-lg font-bold text-indigo-900">${escapeHtml(formatRupiah(summary.allSessionsEstimate))}</p>
+                        <p class="text-xs text-indigo-800">Honor sesi selesai + estimasi sesi terjadwal/berjalan</p>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p class="text-xs text-slate-500">Aturan fee</p>
+                        <p class="mt-1 text-sm font-semibold text-slate-800">${feeRuleLabel}</p>
                     </div>
                 </div>
+                ${honorWarnings.length ? `<div class="mb-4 space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">${honorWarnings.map(warning => `<p>${escapeHtml(warning)}</p>`).join('')}</div>` : ''}
+
+                <div class="mb-5">
+                    <h3 class="font-semibold text-slate-800 mb-2">Jadwal tentor</h3>
+                    <div class="overflow-x-auto rounded-lg border border-slate-200">
+                        <table class="w-full min-w-[640px] text-left text-xs">
+                            <thead class="bg-slate-50 text-slate-500">
+                                <tr>
+                                    <th class="px-3 py-2 font-medium">Tanggal / waktu</th>
+                                    <th class="px-3 py-2 font-medium">Sesi / siswa</th>
+                                    <th class="px-3 py-2 font-medium">Status</th>
+                                    <th class="px-3 py-2 text-right font-medium">Honor</th>
+                                </tr>
+                            </thead>
+                            <tbody>${schedulesHtml}</tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="font-semibold text-slate-800 mb-2">Riwayat pembayaran honor pada periode ini</h3>
+                    <div class="overflow-x-auto rounded-lg border border-slate-200">
+                        <table class="w-full min-w-[420px] text-left text-xs">
+                            <thead class="bg-slate-50 text-slate-500">
+                                <tr>
+                                    <th class="px-3 py-2 font-medium">Tanggal bayar</th>
+                                    <th class="px-3 py-2 font-medium">Nomor bukti</th>
+                                    <th class="px-3 py-2 text-right font-medium">Nominal</th>
+                                </tr>
+                            </thead>
+                            <tbody>${paymentHistory}</tbody>
+                        </table>
+                    </div>
+                </div>
+                <p class="mt-3 text-xs text-slate-500">*Ringkasan dibayar dan harus dibayar mengikuti alokasi honor untuk sesi yang selesai dalam periode ini. Estimasi sesi terjadwal dapat berubah setelah kehadiran dan durasi aktual tercatat.</p>
             `;
-            
-            openModal('Profil Tentor', html, 'Tutup', () => {});
-            // Sembunyikan tombol batal karena hanya mode view
-            document.getElementById('modal-footer').children[0].style.display = 'none';
-            // Kembalikan tombol batal ke semula setelah modal tertutup
-            const oldClose = modalActionBtn.onclick;
-            modalActionBtn.onclick = () => {
+
+            openModal('Profil Tentor', html, 'Tutup', () => {
                 document.getElementById('modal-footer').children[0].style.display = 'block';
-                oldClose();
-            };
+            });
+            document.getElementById('modal-footer').children[0].style.display = 'none';
         }
 
         function toggleFeeInputLabel() {
