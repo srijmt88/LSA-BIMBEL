@@ -70,6 +70,10 @@
         </div>
     </section>
 
+    <section id="public-attendance-screen" class="hidden fixed inset-0 z-[70] flex items-center justify-center bg-slate-50 p-4 overflow-y-auto">
+        <div id="public-attendance-content" class="w-full max-w-lg bg-white rounded-2xl shadow-lg border border-slate-200 p-6"></div>
+    </section>
+
     <!-- Mobile Sidebar Overlay -->
     <div id="sidebar-overlay" class="fixed inset-0 bg-slate-900/50 z-20 hidden md:hidden" onclick="toggleSidebar()"></div>
 
@@ -163,9 +167,9 @@
         // --- Initial database used to seed the Google Sheets database ---
         const db = {
             students: [
-                { id: 1, code: 'S-26001', name: 'Alya Putri', school: 'SMA Negeri 1', grade: '10', parentName: 'Bpk. Andi', phone: '081234567890', program: 'Privat', status: 'Aktif' },
-                { id: 2, code: 'S-26002', name: 'Bima Sakti', school: 'SMP Negeri 3', grade: '8', parentName: 'Ibu Ratna', phone: '081987654321', program: 'Kelompok', status: 'Aktif' },
-                { id: 3, code: 'S-26003', name: 'Citra Kirana', school: 'SD Taruna', grade: '5', parentName: 'Bpk. Budi', phone: '085612312312', program: 'Privat', status: 'Aktif' }
+                { id: 1, code: 'S-26001', name: 'Alya Putri', school: 'SMA Negeri 1', grade: '10', parentName: 'Bpk. Andi', phone: '081234567890', program: 'Privat', status: 'Aktif', monthlyFee: 0 },
+                { id: 2, code: 'S-26002', name: 'Bima Sakti', school: 'SMP Negeri 3', grade: '8', parentName: 'Ibu Ratna', phone: '081987654321', program: 'Kelompok', status: 'Aktif', monthlyFee: 0 },
+                { id: 3, code: 'S-26003', name: 'Citra Kirana', school: 'SD Taruna', grade: '5', parentName: 'Bpk. Budi', phone: '085612312312', program: 'Privat', status: 'Aktif', monthlyFee: 0 }
             ],
             tutors: [
                 { id: 1, name: 'Bu Rina', subject: 'Matematika, IPA', phone: '08111222333', status: 'Aktif', education: 'S1 Pendidikan Matematika', feeRules: { type: 'Per Pertemuan', value: 50000 } },
@@ -200,6 +204,11 @@
         let saveQueue = Promise.resolve();
         let databaseVersion = 0;
         const DATABASE_API_URL = '/api';
+        let selectedScheduleDate = getLocalDateString();
+        let selectedFinanceMonth = getLocalDateString().slice(0, 7);
+        let selectedWAReportId = null;
+        let publicAttendanceToken = '';
+        let publicAttendanceOptions = null;
 
         const routes = [
             { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
@@ -214,6 +223,11 @@
         // --- Core UI Functions ---
         function initApp() {
             lucide.createIcons();
+            const checkinToken = new URLSearchParams(window.location.search).get('checkin');
+            if (checkinToken) {
+                openPublicAttendance(checkinToken);
+                return;
+            }
             callDatabaseApi({ action: 'checkSession' })
                 .then(() => openAdminApp())
                 .catch(error => {
@@ -223,6 +237,186 @@
                         showLoginScreen(error.message || 'Gagal memeriksa sesi admin.');
                     }
                 });
+        }
+
+        async function openPublicAttendance(token) {
+            publicAttendanceToken = token;
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('public-attendance-screen').classList.remove('hidden');
+            const content = document.getElementById('public-attendance-content');
+            content.innerHTML = '<div class="py-12 text-center text-slate-500">Memuat informasi sesi...</div>';
+            try {
+                publicAttendanceOptions = await callDatabaseApi({ action: 'getAttendanceOptions', token });
+                const session = publicAttendanceOptions;
+                const evaluationFields = session.students
+                    .filter(student => student.checkedIn)
+                    .map(student => `
+                        <div>
+                            <label for="attendance-evaluation-${escapeHtml(student.id)}" class="block text-sm font-medium text-slate-700 mb-1">Evaluasi ${escapeHtml(student.name)}</label>
+                            <textarea id="attendance-evaluation-${escapeHtml(student.id)}" data-student-id="${escapeHtml(student.id)}" rows="2" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Contoh: sudah paham pecahan, perlu latihan soal cerita"></textarea>
+                        </div>
+                    `).join('');
+                content.innerHTML = `
+                    <div class="text-center mb-6">
+                        <div class="w-12 h-12 mx-auto rounded-xl bg-primary-50 text-primary-600 flex items-center justify-center mb-3">
+                            <i data-lucide="calendar-check" class="w-6 h-6"></i>
+                        </div>
+                        <h1 class="text-xl font-bold text-slate-800">Presensi Sesi Les</h1>
+                        <p class="text-sm text-slate-500 mt-1">${escapeHtml(session.subject)} · ${escapeHtml(formatScheduleDate(session.date))}</p>
+                        <p class="text-sm text-slate-500">${escapeHtml(session.startTime)} - ${escapeHtml(session.endTime)} · Tentor ${escapeHtml(session.tutor.name)}</p>
+                    </div>
+                    <div id="public-attendance-feedback" class="hidden mb-4 rounded-lg p-3 text-sm" role="status"></div>
+                    ${session.canCheckIn ? `
+                        <form id="public-attendance-form" class="space-y-4">
+                            <div>
+                                <label for="attendance-role" class="block text-sm font-medium text-slate-700 mb-1">Saya adalah</label>
+                                <select id="attendance-role" onchange="updatePublicAttendanceOptions()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                                    <option value="tutor">Tentor</option>
+                                    <option value="student">Siswa</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="attendance-person" class="block text-sm font-medium text-slate-700 mb-1">Pilih nama</label>
+                                <select id="attendance-person" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"></select>
+                            </div>
+                            <div>
+                                <label for="attendance-action" class="block text-sm font-medium text-slate-700 mb-1">Presensi</label>
+                                <select id="attendance-action" onchange="updatePublicAttendanceForm()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                                    <option value="checkIn">Check-in / Jam masuk</option>
+                                    <option value="checkOut">Check-out tentor / Jam pulang</option>
+                                </select>
+                            </div>
+                            <div id="attendance-journal-fields" class="hidden space-y-3 rounded-lg border border-primary-200 bg-primary-50/50 p-4">
+                                <h2 class="font-semibold text-slate-800">Jurnal wajib sebelum sesi selesai</h2>
+                                <button type="button" onclick="refreshPublicAttendanceOptions()" class="text-xs text-primary-700 hover:underline">Muat ulang daftar siswa hadir</button>
+                                <div>
+                                    <label for="attendance-material" class="block text-sm font-medium text-slate-700 mb-1">Materi / bab yang diajarkan</label>
+                                    <textarea id="attendance-material" rows="2" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Ringkas materi yang dibahas"></textarea>
+                                </div>
+                                <div id="attendance-student-evaluations">${evaluationFields || '<p class="text-sm text-slate-600">Belum ada siswa yang check-in. Isi materi sesi sebelum check-out.</p>'}</div>
+                            </div>
+                            <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">Token sesi ini dibagikan bersama. Pilih nama Anda dengan benar; token tidak memverifikasi identitas pemegangnya.</p>
+                            <button id="attendance-submit" type="submit" class="w-full px-4 py-2.5 text-sm font-semibold text-white bg-primary-600 rounded-lg hover:bg-primary-700">Kirim Presensi</button>
+                        </form>
+                    ` : `
+                        <div class="rounded-lg bg-amber-50 border border-amber-200 p-4 text-sm text-amber-800">${escapeHtml(session.message || 'Presensi sesi ini sudah ditutup.')}</div>
+                    `}
+                `;
+                lucide.createIcons();
+                if (session.canCheckIn) {
+                    updatePublicAttendanceOptions();
+                    document.getElementById('public-attendance-form').addEventListener('submit', submitPublicAttendance);
+                }
+            } catch (error) {
+                content.innerHTML = '<div class="py-8 text-center"><h1 class="font-bold text-slate-800">Presensi tidak tersedia</h1><p id="public-attendance-error" class="text-sm text-red-600 mt-2"></p></div>';
+                content.querySelector('#public-attendance-error').textContent =
+                    error.message || 'Token sesi tidak valid atau koneksi sedang bermasalah.';
+            }
+        }
+
+        function updatePublicAttendanceOptions() {
+            const role = document.getElementById('attendance-role').value;
+            const personSelect = document.getElementById('attendance-person');
+            const actionSelect = document.getElementById('attendance-action');
+            const participants = role === 'tutor'
+                ? [publicAttendanceOptions.tutor]
+                : publicAttendanceOptions.students;
+            personSelect.innerHTML = participants.map(person =>
+                `<option value="${person.id}">${escapeHtml(person.name)}</option>`
+            ).join('');
+            const checkOutOption = actionSelect.querySelector('option[value="checkOut"]');
+            checkOutOption.disabled = role !== 'tutor';
+            if (role !== 'tutor' && actionSelect.value === 'checkOut') actionSelect.value = 'checkIn';
+            updatePublicAttendanceForm();
+        }
+
+        function updatePublicAttendanceForm() {
+            const fields = document.getElementById('attendance-journal-fields');
+            if (!fields) return;
+            const needsJournal = document.getElementById('attendance-role').value === 'tutor' &&
+                document.getElementById('attendance-action').value === 'checkOut';
+            fields.classList.toggle('hidden', !needsJournal);
+            fields.querySelectorAll('textarea[required], textarea[data-student-id]').forEach(input => {
+                input.required = needsJournal;
+            });
+            if (needsJournal && fields.dataset.hasRefreshed !== 'true') {
+                refreshPublicAttendanceOptions();
+            } else if (!needsJournal) {
+                fields.dataset.hasRefreshed = 'false';
+            }
+        }
+
+        async function refreshPublicAttendanceOptions() {
+            const fields = document.getElementById('attendance-journal-fields');
+            const container = document.getElementById('attendance-student-evaluations');
+            if (!fields || !container || fields.dataset.refreshing === 'true') return;
+            fields.dataset.refreshing = 'true';
+            const existingNotes = new Map(Array.from(container.querySelectorAll('textarea[data-student-id]'))
+                .map(input => [String(input.dataset.studentId), input.value]));
+            try {
+                publicAttendanceOptions = await callDatabaseApi({
+                    action: 'getAttendanceOptions',
+                    token: publicAttendanceToken
+                });
+                const checkedInStudents = publicAttendanceOptions.students.filter(student => student.checkedIn);
+                container.innerHTML = checkedInStudents.length
+                    ? checkedInStudents.map(student => `
+                        <div>
+                            <label for="attendance-evaluation-${escapeHtml(student.id)}" class="block text-sm font-medium text-slate-700 mb-1">Evaluasi ${escapeHtml(student.name)}</label>
+                            <textarea id="attendance-evaluation-${escapeHtml(student.id)}" data-student-id="${escapeHtml(student.id)}" rows="2" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Contoh: sudah paham pecahan, perlu latihan soal cerita">${escapeHtml(existingNotes.get(String(student.id)) || '')}</textarea>
+                        </div>
+                    `).join('')
+                    : '<p class="text-sm text-slate-600">Belum ada siswa yang check-in. Isi materi sesi sebelum check-out.</p>';
+                fields.dataset.hasRefreshed = 'true';
+                updatePublicAttendanceForm();
+            } catch (error) {
+                showToast(`Gagal memuat ulang presensi siswa: ${error.message || 'Periksa koneksi.'}`, 'error');
+            } finally {
+                fields.dataset.refreshing = 'false';
+            }
+        }
+
+        async function submitPublicAttendance(event) {
+            event.preventDefault();
+            const participantType = document.getElementById('attendance-role').value;
+            const attendanceAction = document.getElementById('attendance-action').value;
+            let journal = null;
+            if (participantType === 'tutor' && attendanceAction === 'checkOut') {
+                const material = document.getElementById('attendance-material').value.trim();
+                const evaluations = Array.from(document.querySelectorAll('#attendance-journal-fields textarea[data-student-id]'))
+                    .map(input => ({ studentId: Number(input.dataset.studentId), notes: input.value.trim() }));
+                if (!material || evaluations.some(evaluation => !evaluation.notes)) {
+                    const feedback = document.getElementById('public-attendance-feedback');
+                    feedback.textContent = 'Isi materi dan evaluasi semua siswa yang hadir sebelum sesi diakhiri.';
+                    feedback.className = 'mb-4 rounded-lg p-3 text-sm bg-red-50 text-red-700 border border-red-200';
+                    return;
+                }
+                journal = { material, evaluations };
+            }
+            const button = document.getElementById('attendance-submit');
+            const feedback = document.getElementById('public-attendance-feedback');
+            let sessionCompleted = false;
+            button.disabled = true;
+            button.textContent = 'Menyimpan...';
+            try {
+                const result = await callDatabaseApi({
+                    action: 'recordAttendance',
+                    token: publicAttendanceToken,
+                    participantType,
+                    participantId: Number(document.getElementById('attendance-person').value),
+                    attendanceAction,
+                    journal
+                });
+                feedback.textContent = result.message;
+                feedback.className = 'mb-4 rounded-lg p-3 text-sm bg-green-50 text-green-700 border border-green-200';
+                sessionCompleted = result.status === 'Selesai';
+            } catch (error) {
+                feedback.textContent = error.message || 'Presensi gagal disimpan.';
+                feedback.className = 'mb-4 rounded-lg p-3 text-sm bg-red-50 text-red-700 border border-red-200';
+            } finally {
+                button.disabled = sessionCompleted;
+                button.textContent = sessionCompleted ? 'Sesi selesai' : 'Kirim Presensi';
+            }
         }
 
         function showLoginScreen(message) {
@@ -571,6 +765,7 @@
                                             </td>
                                             <td class="px-6 py-4">
                                                 <span class="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-md text-xs font-medium border border-slate-200">${s.program}</span>
+                                                <p class="text-xs text-slate-500 mt-1">Bulanan: ${formatRupiah(s.monthlyFee)}</p>
                                             </td>
                                             <td class="px-6 py-4">
                                                 <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
@@ -579,7 +774,7 @@
                                             </td>
                                             <td class="px-6 py-4 text-right">
                                                 <button class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Detail"><i data-lucide="eye" class="w-4 h-4"></i></button>
-                                                <button class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button>
+                                                <button onclick="showStudentMonthlyFeeModal(${s.id})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Atur tarif bulanan"><i data-lucide="wallet" class="w-4 h-4"></i></button>
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -675,6 +870,9 @@
         }
 
         function renderSchedules() {
+            const schedules = db.schedules
+                .filter(schedule => schedule.date === selectedScheduleDate)
+                .sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)));
             return `
                 <div class="fade-in max-w-7xl mx-auto">
                     <div class="flex justify-between items-center mb-6">
@@ -690,50 +888,75 @@
                     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div class="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
                             <div class="flex items-center gap-4">
-                                <button class="p-1.5 hover:bg-slate-200 rounded text-slate-600"><i data-lucide="chevron-left" class="w-5 h-5"></i></button>
-                                <span class="font-medium text-slate-800">11 November 2026</span>
-                                <button class="p-1.5 hover:bg-slate-200 rounded text-slate-600"><i data-lucide="chevron-right" class="w-5 h-5"></i></button>
+                                <button onclick="changeScheduleDate(-1)" class="p-1.5 hover:bg-slate-200 rounded text-slate-600" aria-label="Hari sebelumnya"><i data-lucide="chevron-left" class="w-5 h-5"></i></button>
+                                <span class="font-medium text-slate-800">${formatScheduleDate(selectedScheduleDate)}</span>
+                                <button onclick="changeScheduleDate(1)" class="p-1.5 hover:bg-slate-200 rounded text-slate-600" aria-label="Hari berikutnya"><i data-lucide="chevron-right" class="w-5 h-5"></i></button>
                             </div>
-                            <div class="flex border border-slate-200 rounded-lg overflow-hidden bg-white">
-                                <button class="px-3 py-1.5 text-sm font-medium bg-primary-50 text-primary-600">Harian</button>
-                                <button class="px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 border-l border-slate-200">Mingguan</button>
-                            </div>
+                            <button onclick="selectedScheduleDate = getLocalDateString(); navigate('schedules')" class="text-sm text-primary-600 font-medium hover:underline">Hari ini</button>
                         </div>
                         <div class="p-4">
                             <div class="space-y-3">
-                                ${db.schedules.map(s => {
-                                    const studentNames = s.studentIds.map(id => db.students.find(st => st.id === id).name).join(', ');
-                                    const tutor = db.tutors.find(t => t.id === s.tutorId).name;
-                                    let actionBtn = '';
-                                    if(s.status === 'Selesai' && !s.hasJournal) {
-                                        actionBtn = `<button onclick="showAddJournalModal(${s.id})" class="text-xs bg-amber-100 text-amber-700 hover:bg-amber-200 px-3 py-1.5 rounded-md font-medium flex items-center gap-1"><i data-lucide="edit-3" class="w-3.5 h-3.5"></i> Isi Jurnal</button>`;
-                                    } else if (s.status === 'Selesai' && s.hasJournal) {
-                                        actionBtn = `<span class="text-xs text-green-600 font-medium flex items-center gap-1"><i data-lucide="check-circle-2" class="w-4 h-4"></i> Jurnal Selesai</span>`;
-                                    } else {
-                                        actionBtn = `<button class="text-xs bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1.5 rounded-md font-medium border border-primary-200">Mulai Sesi</button>`;
+                                ${schedules.map(s => {
+                                    const studentNames = (s.studentIds || [])
+                                        .map(id => db.students.find(st => String(st.id) === String(id))?.name || 'Siswa tidak ditemukan')
+                                        .join(', ');
+                                    const tutorRecord = db.tutors.find(t => String(t.id) === String(s.tutorId));
+                                    const tutorName = tutorRecord ? tutorRecord.name : 'Tentor tidak ditemukan';
+                                    const attendanceRecords = Array.isArray(s.attendanceRecords) ? s.attendanceRecords : [];
+                                    const tutorAttendance = attendanceRecords.find(record => record.participantType === 'tutor');
+                                    const tutorHasCheckedIn = Boolean(tutorAttendance?.checkInAt);
+                                    const actionButtons = [];
+
+                                    if (s.status === 'Dijadwalkan') {
+                                        actionButtons.push(`<button onclick="startScheduleManually(${s.id})" class="text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 px-3 py-1.5 rounded-md font-medium">Mulai Sesi</button>`);
+                                        actionButtons.push(`<button onclick="showRescheduleModal(${s.id})" class="text-xs bg-white text-slate-700 hover:bg-slate-50 px-3 py-1.5 rounded-md font-medium border border-slate-200">Reschedule</button>`);
+                                        actionButtons.push(`<button onclick="cancelSchedule(${s.id})" class="text-xs bg-red-50 text-red-700 hover:bg-red-100 px-3 py-1.5 rounded-md font-medium">Batalkan</button>`);
+                                    } else if (s.status === 'Berjalan') {
+                                        actionButtons.push(`<button onclick="completeScheduleManually(${s.id})" class="text-xs bg-green-50 text-green-700 hover:bg-green-100 px-3 py-1.5 rounded-md font-medium">Selesaikan</button>`);
+                                        if (!tutorHasCheckedIn) {
+                                            actionButtons.push(`<button onclick="cancelSchedule(${s.id})" class="text-xs bg-red-50 text-red-700 hover:bg-red-100 px-3 py-1.5 rounded-md font-medium">Batalkan</button>`);
+                                        }
+                                    } else if (s.status === 'Selesai' && !s.hasJournal) {
+                                        actionButtons.push(`<button onclick="showAddJournalModal(${s.id})" class="text-xs bg-amber-100 text-amber-700 hover:bg-amber-200 px-3 py-1.5 rounded-md font-medium">Isi Jurnal</button>`);
+                                    } else if (s.status === 'Selesai') {
+                                        actionButtons.push(`<span class="text-xs text-green-600 font-medium">Jurnal selesai</span>`);
+                                    }
+                                    if (s.status === 'Dijadwalkan' || s.status === 'Berjalan') {
+                                        actionButtons.push(`<button onclick="showAttendanceToken(${s.id})" class="text-xs bg-primary-50 text-primary-700 hover:bg-primary-100 px-3 py-1.5 rounded-md font-medium">Token Presensi</button>`);
+                                    }
+                                    if (tutorRecord?.feeRules?.type === 'Persentase' &&
+                                        !(Number(s.manualTutorFee) > 0) &&
+                                        s.status !== 'Selesai' && s.status !== 'Batal') {
+                                        actionButtons.push(`<button onclick="showManualHonorModal(${s.id})" class="text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 px-3 py-1.5 rounded-md font-medium">Atur Honor</button>`);
                                     }
 
                                     return `
-                                    <div class="flex items-center p-4 border border-slate-100 rounded-lg hover:border-slate-300 transition-colors bg-white">
+                                    <div class="flex flex-col md:flex-row md:items-center p-4 border border-slate-100 rounded-lg hover:border-slate-300 transition-colors bg-white gap-4">
                                         <div class="w-24 shrink-0 text-center border-r border-slate-100 pr-4">
                                             <p class="font-bold text-slate-800">${s.startTime}</p>
                                             <p class="text-xs text-slate-500">${s.endTime}</p>
                                         </div>
                                         <div class="flex-1 px-4 flex flex-col justify-center">
                                             <div class="flex items-center gap-2 mb-1">
-                                                <h3 class="font-bold text-slate-800 text-lg">${s.subject}</h3>
-                                                <span class="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] uppercase font-bold tracking-wider">${s.type}</span>
+                                                <h3 class="font-bold text-slate-800 text-lg">${escapeHtml(s.subject)}</h3>
+                                                <span class="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] uppercase font-bold tracking-wider">${escapeHtml(s.type)}</span>
+                                                ${s.recurrenceId ? '<span class="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold">RUTIN</span>' : ''}
                                             </div>
-                                            <p class="text-sm text-slate-600 flex items-center gap-1.5 mb-1"><i data-lucide="users" class="w-4 h-4 text-slate-400"></i> ${studentNames}</p>
-                                            <p class="text-sm text-slate-600 flex items-center gap-1.5"><i data-lucide="user" class="w-4 h-4 text-slate-400"></i> ${tutor}</p>
+                                            <p class="text-sm text-slate-600 flex items-center gap-1.5 mb-1"><i data-lucide="users" class="w-4 h-4 text-slate-400"></i> ${escapeHtml(studentNames || 'Belum ada siswa')}</p>
+                                            <p class="text-sm text-slate-600 flex items-center gap-1.5"><i data-lucide="user" class="w-4 h-4 text-slate-400"></i> ${escapeHtml(tutorName)}${s.room ? ` · Ruang ${escapeHtml(s.room)}` : ''}</p>
+                                            <p class="text-xs text-slate-500 mt-1">${(attendanceRecords.filter(record => record.checkInAt).length)} check-in · Tentor masuk ${s.actualStartTime || '-'} / pulang ${s.actualEndTime || '-'}</p>
+                                            ${s.rescheduleHistory?.length ? `<p class="text-xs text-amber-700 mt-1">Reschedule: ${escapeHtml(s.rescheduleHistory[s.rescheduleHistory.length - 1].reason)}</p>` : ''}
+                                            ${s.status === 'Batal' && s.cancellationReason ? `<p class="text-xs text-red-600 mt-1">Alasan batal: ${escapeHtml(s.cancellationReason)}</p>` : ''}
                                         </div>
-                                        <div class="flex flex-col items-end gap-2 pl-4 shrink-0">
+                                        <div class="flex flex-col items-start md:items-end gap-2 pl-4 shrink-0">
                                             ${statusBadge(s.status)}
-                                            ${actionBtn}
+                                            <span class="text-[11px] text-slate-400">${tutorAttendance?.checkInAt ? 'Presensi tentor tervalidasi' : 'Belum ada check-in tentor'}</span>
+                                            <div class="flex flex-wrap gap-1.5 md:justify-end">${actionButtons.join('')}</div>
                                         </div>
                                     </div>
                                     `;
                                 }).join('')}
+                                ${schedules.length ? '' : '<div class="py-12 text-center text-slate-400">Tidak ada jadwal pada tanggal ini.</div>'}
                             </div>
                         </div>
                     </div>
@@ -763,44 +986,45 @@
                         </div>
                         <div class="flex-1 overflow-auto p-4 space-y-4">
                             ${db.journals.map(j => {
-                                const student = db.students.find(s => s.id === j.studentId);
-                                const tutor = db.tutors.find(t => t.id === j.tutorId);
-                                const schedule = db.schedules.find(s => s.id === j.scheduleId);
+                                const student = db.students.find(s => String(s.id) === String(j.studentId)) || { name: 'Siswa tidak ditemukan' };
+                                const tutor = db.tutors.find(t => String(t.id) === String(j.tutorId)) || { name: 'Tentor tidak ditemukan' };
+                                const schedule = db.schedules.find(s => String(s.id) === String(j.scheduleId)) || {};
+                                const hasScore = j.score !== '' && j.score != null && Number.isFinite(Number(j.score));
                                 
                                 return `
                                 <div class="border border-slate-200 rounded-lg p-5 hover:shadow-md transition-shadow bg-white">
                                     <div class="flex justify-between items-start mb-4">
                                         <div class="flex gap-4">
                                             <div class="w-12 h-12 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-lg">
-                                                ${student.name.charAt(0)}
+                                                ${escapeHtml(student.name.charAt(0))}
                                             </div>
                                             <div>
-                                                <h3 class="font-bold text-slate-800 text-lg">${student.name}</h3>
+                                                <h3 class="font-bold text-slate-800 text-lg">${escapeHtml(student.name)}</h3>
                                                 <p class="text-sm text-slate-500 flex items-center gap-2">
-                                                    <span>${schedule.date}</span> &bull; 
-                                                    <span>${schedule.subject}</span> &bull; 
-                                                    <span>${tutor.name}</span>
+                                                    <span>${escapeHtml(schedule.date || j.date || '-')}</span> &bull; 
+                                                    <span>${escapeHtml(schedule.subject || 'Pembelajaran')}</span> &bull; 
+                                                    <span>${escapeHtml(tutor.name)}</span>
                                                 </p>
                                             </div>
                                         </div>
                                         <div class="text-right">
-                                            <span class="inline-block px-3 py-1 bg-green-50 text-green-700 border border-green-200 rounded-md text-xs font-semibold mb-1">Nilai: ${j.score}/100</span>
-                                            <p class="text-xs font-medium text-slate-500">Penguasaan: <span class="text-slate-800">${j.mastery}</span></p>
+                                            ${hasScore ? `<span class="inline-block px-3 py-1 bg-green-50 text-green-700 border border-green-200 rounded-md text-xs font-semibold mb-1">Nilai: ${escapeHtml(j.score)}/100</span>` : '<span class="inline-block px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-md text-xs font-semibold mb-1">Jurnal sesi</span>'}
+                                            <p class="text-xs font-medium text-slate-500">Penguasaan: <span class="text-slate-800">${escapeHtml(j.mastery || 'Catatan tentor')}</span></p>
                                         </div>
                                     </div>
                                     <div class="bg-slate-50 rounded-lg p-4 space-y-3 border border-slate-100">
                                         <div>
                                             <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Materi</p>
-                                            <p class="text-sm text-slate-700">${j.material}</p>
+                                            <p class="text-sm text-slate-700">${escapeHtml(j.material || '-')}</p>
                                         </div>
                                         <div>
                                             <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Catatan & Perkembangan</p>
-                                            <p class="text-sm text-slate-700">${j.notes}</p>
+                                            <p class="text-sm text-slate-700">${escapeHtml(j.notes || '-')}</p>
                                         </div>
-                                        <div>
+                                        ${j.recommendation ? `<div>
                                             <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Rekomendasi</p>
-                                            <p class="text-sm text-slate-700">${j.recommendation}</p>
-                                        </div>
+                                            <p class="text-sm text-slate-700">${escapeHtml(j.recommendation)}</p>
+                                        </div>` : ''}
                                     </div>
                                 </div>
                                 `;
@@ -811,68 +1035,184 @@
             `;
         }
 
+        function getWhatsAppPhone(phone) {
+            let digits = String(phone || '').replace(/[^\d]/g, '');
+            if (digits.startsWith('0')) digits = `62${digits.slice(1)}`;
+            else if (digits.startsWith('8')) digits = `62${digits}`;
+            return /^\d{8,15}$/.test(digits) ? digits : '';
+        }
+
+        function getWAReportJournals(report) {
+            const journalIds = Array.isArray(report.journalIds)
+                ? report.journalIds
+                : report.journalId == null ? [] : [report.journalId];
+            const linked = db.journals.filter(journal =>
+                journalIds.some(id => String(id) === String(journal.id))
+            );
+            if (linked.length) return linked;
+            return db.journals.filter(journal =>
+                String(journal.studentId) === String(report.studentId) &&
+                String(journal.date || db.schedules.find(schedule =>
+                    String(schedule.id) === String(journal.scheduleId)
+                )?.date || '') === String(report.date || report.reportDate || '')
+            );
+        }
+
+        function getWAReportDate(report) {
+            const journal = getWAReportJournals(report)[0];
+            const schedule = journal && db.schedules.find(item =>
+                String(item.id) === String(journal.scheduleId)
+            );
+            return report.date || report.reportDate || journal?.date || schedule?.date || '';
+        }
+
+        function buildDailyStudentWhatsAppMessage(report) {
+            const journals = getWAReportJournals(report);
+            const studentId = report.studentId != null ? report.studentId : journals[0]?.studentId;
+            const student = db.students.find(item => String(item.id) === String(studentId));
+            if (!student) return { student: null, message: '' };
+            const date = getWAReportDate(report) || getLocalDateString();
+            const schedules = db.schedules.filter(schedule =>
+                schedule.date === date &&
+                (schedule.studentIds || []).some(id => String(id) === String(student.id))
+            ).sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)));
+            const sections = schedules.map(schedule => {
+                const attendance = (Array.isArray(schedule.attendanceRecords) ? schedule.attendanceRecords : [])
+                    .find(record => record.participantType === 'student' && String(record.participantId) === String(student.id));
+                const journal = db.journals.find(item =>
+                    String(item.scheduleId) === String(schedule.id) &&
+                    String(item.studentId) === String(student.id)
+                );
+                const attendanceText = attendance?.checkInAt
+                    ? `Hadir${attendance.checkInAt ? ` (masuk ${new Date(attendance.checkInAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })})` : ''}`
+                    : schedule.status === 'Batal' ? 'Sesi dibatalkan'
+                        : schedule.status === 'Selesai' ? 'Tidak tercatat hadir'
+                            : 'Belum dilaksanakan';
+                const tutor = db.tutors.find(item => String(item.id) === String(schedule.tutorId));
+                const lines = [
+                    `• ${schedule.subject || 'Sesi belajar'} (${schedule.startTime || '--:--'}-${schedule.endTime || '--:--'}) — ${attendanceText}`,
+                    `  Tentor: ${tutor?.name || 'Tidak diketahui'}`
+                ];
+                const material = journal?.material || schedule.lessonMaterial;
+                if (material) lines.push(`  Materi: ${material}`);
+                if (journal?.notes) lines.push(`  Evaluasi: ${journal.notes}`);
+                if (journal?.recommendation) lines.push(`  Latihan: ${journal.recommendation}`);
+                return lines.join('\n');
+            });
+            const parentGreeting = student.parentName && student.parentName !== '-'
+                ? `Bapak/Ibu ${student.parentName}`
+                : 'Bapak/Ibu Wali';
+            const message = [
+                `Assalamu'alaikum ${parentGreeting},`,
+                '',
+                `Berikut rekap kehadiran dan belajar ${student.name} pada ${formatScheduleDate(date)}:`,
+                ...(sections.length ? sections : ['Belum ada sesi pada tanggal ini.']),
+                '',
+                'Terima kasih atas kepercayaan Bapak/Ibu kepada LSA BIMBEL.'
+            ].join('\n');
+            return { student, message };
+        }
+
+        function getSelectedWAReport() {
+            const selected = db.waReports.find(report => String(report.id) === String(selectedWAReportId));
+            const report = selected || db.waReports.find(item => item.status !== 'Terkirim') || db.waReports[0] || null;
+            if (report) selectedWAReportId = report.id;
+            return report;
+        }
+
+        function selectWAReport(reportId) {
+            selectedWAReportId = reportId;
+            navigate('wa_reports');
+        }
+
+        function sendWAReport(reportId) {
+            const report = db.waReports.find(item => String(item.id) === String(reportId));
+            if (!report) {
+                showToast('Draft laporan tidak ditemukan.', 'error');
+                return;
+            }
+            const { student, message } = buildDailyStudentWhatsAppMessage(report);
+            const phone = student && getWhatsAppPhone(student.phone);
+            if (!phone) {
+                showToast('Nomor WhatsApp wali tidak valid. Perbarui data siswa terlebih dahulu.', 'error');
+                return;
+            }
+            const url = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+            const chatWindow = window.open(url, '_blank');
+            if (!chatWindow) {
+                showToast('Izinkan pop-up browser untuk membuka WhatsApp.', 'error');
+                return;
+            }
+            chatWindow.opener = null;
+            showToast('WhatsApp dibuka dengan pesan terisi. Tekan Kirim di WhatsApp untuk mengirim.', 'info');
+        }
+
+        function markWAReportSent(reportId) {
+            const report = db.waReports.find(item => String(item.id) === String(reportId));
+            if (!report || !window.confirm('Konfirmasi bahwa pesan WhatsApp sudah benar-benar dikirim?')) return;
+            report.status = 'Terkirim';
+            report.sentAt = new Date().toISOString();
+            saveDatabaseAfterChange('Laporan ditandai sudah dikirim.');
+            navigate('wa_reports');
+        }
+
         function renderWAReports() {
+            const report = getSelectedWAReport();
+            const reportRows = [...db.waReports].sort((a, b) =>
+                String(b.date || b.reportDate || '').localeCompare(String(a.date || a.reportDate || '')) ||
+                Number(b.id) - Number(a.id)
+            );
+            const preview = report ? buildDailyStudentWhatsAppMessage(report) : { student: null, message: '' };
+            const phone = preview.student ? getWhatsAppPhone(preview.student.phone) : '';
+            const reportDate = report ? getWAReportDate(report) : '';
             return `
                 <div class="fade-in max-w-7xl mx-auto h-full flex flex-col">
                     <div class="mb-6">
                         <h1 class="text-2xl font-bold text-slate-800">Laporan WhatsApp</h1>
-                        <p class="text-slate-500 text-sm mt-1">Review dan kirim laporan belajar ke orang tua sesuai PRD.</p>
+                        <p class="text-slate-500 text-sm mt-1">Rekap kehadiran harian dan ringkasan belajar personal untuk wali siswa.</p>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 flex-1 min-h-0">
-                        <!-- List Laporan -->
                         <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden col-span-1">
                             <div class="p-4 border-b border-slate-100 bg-slate-50">
-                                <h2 class="font-semibold text-slate-800">Draft Laporan (Pending)</h2>
+                                <h2 class="font-semibold text-slate-800">Draft Laporan</h2>
                             </div>
                             <div class="flex-1 overflow-auto divide-y divide-slate-100">
-                                ${db.waReports.map(r => {
-                                    const journal = db.journals.find(j => j.id === r.journalId);
-                                    const student = db.students.find(s => s.id === journal.studentId);
-                                    const schedule = db.schedules.find(s => s.id === journal.scheduleId);
+                                ${reportRows.map(item => {
+                                    const previewItem = buildDailyStudentWhatsAppMessage(item);
+                                    const status = item.status || 'Menunggu Persetujuan';
+                                    const selected = report && String(report.id) === String(item.id);
                                     return `
-                                    <div class="p-4 cursor-pointer hover:bg-slate-50 border-l-4 border-primary-500 bg-primary-50/30">
-                                        <div class="flex justify-between items-start mb-1">
-                                            <h3 class="font-semibold text-slate-800">${student.name}</h3>
-                                            <span class="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">Pending</span>
-                                        </div>
-                                        <p class="text-xs text-slate-500">${schedule.subject} &bull; ${schedule.date}</p>
-                                        <p class="text-xs text-slate-600 mt-2 truncate">Wali: ${student.parentName} (${student.phone})</p>
-                                    </div>
+                                        <button onclick="selectWAReport(${Number(item.id)})" class="w-full text-left p-4 hover:bg-slate-50 border-l-4 ${selected ? 'border-primary-500 bg-primary-50/30' : 'border-transparent'}">
+                                            <div class="flex justify-between items-start mb-1 gap-2">
+                                                <h3 class="font-semibold text-slate-800">${escapeHtml(previewItem.student?.name || 'Siswa tidak ditemukan')}</h3>
+                                                <span class="text-[10px] px-2 py-0.5 ${status === 'Terkirim' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'} rounded font-medium">${escapeHtml(status)}</span>
+                                            </div>
+                                            <p class="text-xs text-slate-500">Rekap harian · ${escapeHtml(getWAReportDate(item) || 'Tanggal tidak tersedia')}</p>
+                                            <p class="text-xs text-slate-600 mt-2 truncate">Wali: ${escapeHtml(previewItem.student?.parentName || '-')} (${escapeHtml(previewItem.student?.phone || '-')})</p>
+                                        </button>
                                     `;
                                 }).join('')}
+                                ${reportRows.length ? '' : '<div class="p-6 text-center text-sm text-slate-400">Belum ada draft laporan. Laporan dibuat setelah jurnal sesi selesai.</div>'}
                             </div>
                         </div>
 
-                        <!-- Preview & Action -->
                         <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden col-span-1 md:col-span-2">
-                            <div class="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                                <h2 class="font-semibold text-slate-800">Preview Pesan</h2>
-                                <button onclick="sendWAReport()" class="bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-600 flex items-center gap-2 shadow-sm">
-                                    <i data-lucide="send" class="w-4 h-4"></i> Kirim WhatsApp
-                                </button>
-                            </div>
-                            <div class="flex-1 overflow-auto p-6 bg-[#e5ddd5] relative">
-                                <!-- Mock WA Chat Bubble -->
-                                <div class="max-w-md mx-auto bg-white rounded-lg p-3 shadow-sm text-sm text-slate-800 relative pb-6">
-                                    <p>Assalamu'alaikum, Bapak/Ibu.</p><br>
-                                    <p>Nama: <b>Alya Putri</b></p>
-                                    <p>Tanggal: 11 November 2026</p>
-                                    <p>Tentor: Bu Rina</p>
-                                    <p>Mata pelajaran: Matematika</p>
-                                    <br>
-                                    <p>Materi: Pecahan sederhana dan operasi hitung</p>
-                                    <p>Hasil evaluasi: 85/100</p>
-                                    <p>Perkembangan: Alya sudah mampu memahami penjumlahan pecahan dengan penyebut sama.</p>
-                                    <p>Perlu ditingkatkan: Soal cerita dan pecahan dengan penyebut berbeda.</p>
-                                    <p>Rekomendasi: Latihan 5 soal di rumah.</p>
-                                    <br>
-                                    <p>Terima kasih atas kepercayaan Bapak/Ibu kepada bimbel kami.</p>
-                                    
-                                    <div class="absolute bottom-1 right-2 text-[10px] text-slate-400 flex items-center gap-1">
-                                        16:45 <i data-lucide="check" class="w-3 h-3"></i>
-                                    </div>
+                            <div class="p-4 border-b border-slate-100 flex flex-wrap justify-between items-center gap-3 bg-slate-50">
+                                <div>
+                                    <h2 class="font-semibold text-slate-800">Preview Pesan</h2>
+                                    <p class="text-xs text-slate-500 mt-1">${escapeHtml(preview.student ? `${preview.student.parentName} · ${preview.student.phone} · ${reportDate}` : 'Pilih draft laporan')}</p>
                                 </div>
+                                <div class="flex gap-2">
+                                    <button onclick="sendWAReport(${report ? Number(report.id) : 0})" ${!phone ? 'disabled' : ''} class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm">
+                                        <i data-lucide="send" class="w-4 h-4"></i> Buka WhatsApp
+                                    </button>
+                                    ${report && report.status !== 'Terkirim' ? `<button onclick="markWAReportSent(${Number(report.id)})" class="bg-white text-slate-700 border border-slate-300 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50">Tandai terkirim</button>` : ''}
+                                </div>
+                            </div>
+                            <div class="flex-1 overflow-auto p-6 bg-[#e5ddd5]">
+                                <pre class="max-w-xl mx-auto min-h-40 whitespace-pre-wrap break-words bg-white rounded-lg p-4 shadow-sm text-sm text-slate-800 font-sans">${escapeHtml(preview.message || 'Pilih draft laporan untuk melihat pesan.')}</pre>
+                                <p class="max-w-xl mx-auto mt-3 text-xs text-slate-600">Tombol membuka WhatsApp dengan pesan terisi. Owner tetap menekan tombol Kirim di WhatsApp; status tidak ditandai terkirim otomatis.</p>
                             </div>
                         </div>
                     </div>
@@ -890,14 +1230,50 @@
                 .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
             const unpaidAmount = db.invoices.reduce((sum, invoice) => sum + getInvoiceRemaining(invoice), 0);
             const pendingHonor = db.tutorEarnings.reduce((sum, earning) => sum + getEarningRemaining(earning), 0);
+            const completedMonthSchedules = db.schedules.filter(schedule =>
+                schedule.status === 'Selesai' && String(schedule.date || '').slice(0, 7) === selectedFinanceMonth
+            );
+            const monthTutorEarnings = db.tutorEarnings.filter(earning =>
+                String(earning.date || '').slice(0, 7) === selectedFinanceMonth
+            );
             const tutorHonorMap = {};
-            db.tutorEarnings.forEach(e => {
-                if(!tutorHonorMap[e.tutorId]) {
-                    tutorHonorMap[e.tutorId] = { totalSesi: 0, pendingHonor: 0 };
-                }
-                tutorHonorMap[e.tutorId].totalSesi++;
-                tutorHonorMap[e.tutorId].pendingHonor += getEarningRemaining(e);
+            db.tutors.forEach(tutor => {
+                const earnings = monthTutorEarnings.filter(earning => String(earning.tutorId) === String(tutor.id));
+                tutorHonorMap[tutor.id] = {
+                    totalSesi: completedMonthSchedules.filter(schedule => String(schedule.tutorId) === String(tutor.id)).length,
+                    totalHonor: earnings.reduce((sum, earning) => sum + (Number(earning.amount) || 0), 0),
+                    paidHonor: earnings.reduce((sum, earning) => sum + getEarningPaidAmount(earning), 0),
+                    pendingHonor: earnings.reduce((sum, earning) => sum + getEarningRemaining(earning), 0)
+                };
             });
+            const studentMonthSummary = db.students.filter(student => student.status === 'Aktif').map(student => {
+                const sessions = completedMonthSchedules.filter(schedule =>
+                    (schedule.studentIds || []).some(id => String(id) === String(student.id))
+                );
+                const attendedSessions = sessions.filter(schedule =>
+                    (Array.isArray(schedule.attendanceRecords) ? schedule.attendanceRecords : []).some(record =>
+                        record.participantType === 'student' &&
+                        String(record.participantId) === String(student.id) &&
+                        record.checkInAt
+                    )
+                ).length;
+                const invoice = db.invoices.find(item =>
+                    String(item.studentId) === String(student.id) &&
+                    (item.billingMonth === selectedFinanceMonth ||
+                     String(item.dueDate || '').slice(0, 7) === selectedFinanceMonth)
+                );
+                return {
+                    student,
+                    sessionCount: sessions.length,
+                    attendedSessions,
+                    amount: invoice ? Number(invoice.amount) || 0 : Number(student.monthlyFee) || 0,
+                    paid: invoice ? getInvoicePaidAmount(invoice) : 0,
+                    remaining: invoice ? getInvoiceRemaining(invoice) : 0,
+                    invoice
+                };
+            });
+            const monthlyInvoiceTotal = studentMonthSummary.reduce((sum, item) => sum + item.amount, 0);
+            const monthlyInvoiceRemaining = studentMonthSummary.reduce((sum, item) => sum + item.remaining, 0);
             const invoices = [...db.invoices].sort((a, b) => Number(b.id) - Number(a.id));
             const payments = [...db.payments].sort((a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id));
             const tutorPayments = [...db.tutorPayments].sort((a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id));
@@ -929,6 +1305,53 @@
                         ${kpiCard('Tagihan Belum Lunas', 'Rp ' + unpaidAmount.toLocaleString('id-ID'), 'alert-circle', 'bg-amber-100 text-amber-600')}
                         ${kpiCard('Honor Tentor Belum Dibayar', formatRupiah(pendingHonor), 'wallet', 'bg-blue-100 text-blue-600')}
                     </div>
+
+                    <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+                        <div class="px-5 py-4 border-b border-slate-100 bg-slate-50 flex flex-wrap justify-between items-center gap-3">
+                            <div>
+                                <h2 class="font-semibold text-slate-800">Rekap Kehadiran & Keuangan Bulanan</h2>
+                                <p class="text-xs text-slate-500 mt-1">${completedMonthSchedules.length} sesi selesai · Potensi tagihan ${formatRupiah(monthlyInvoiceTotal)} · Sisa invoice ${formatRupiah(monthlyInvoiceRemaining)}</p>
+                            </div>
+                            <label class="text-sm text-slate-600 flex items-center gap-2">
+                                Bulan
+                                <input type="month" value="${escapeHtml(selectedFinanceMonth)}" onchange="updateFinanceMonth(this.value)" class="px-3 py-2 border border-slate-300 rounded-lg bg-white">
+                            </label>
+                        </div>
+                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 p-5">
+                            <div class="overflow-auto">
+                                <h3 class="font-medium text-slate-700 mb-2">Rekap honor tentor</h3>
+                                <table class="w-full text-sm text-left">
+                                    <thead class="text-slate-500 border-b border-slate-100">
+                                        <tr><th class="py-2 pr-3 font-medium">Tentor</th><th class="py-2 px-2 text-center font-medium">Sesi</th><th class="py-2 px-2 text-right font-medium">Honor</th><th class="py-2 pl-2 text-right font-medium">Belum dibayar</th></tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        ${db.tutors.map(tutor => {
+                                            const summary = tutorHonorMap[tutor.id];
+                                            return `<tr><td class="py-2 pr-3">${escapeHtml(tutor.name)}</td><td class="py-2 px-2 text-center">${summary.totalSesi}</td><td class="py-2 px-2 text-right">${formatRupiah(summary.totalHonor)}</td><td class="py-2 pl-2 text-right text-amber-700">${formatRupiah(summary.pendingHonor)}</td></tr>`;
+                                        }).join('')}
+                                        ${db.tutors.length ? '' : '<tr><td colspan="4" class="py-4 text-center text-slate-400">Belum ada tentor.</td></tr>'}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="overflow-auto">
+                                <h3 class="font-medium text-slate-700 mb-2">Rekap kehadiran & tagihan siswa</h3>
+                                <table class="w-full text-sm text-left">
+                                    <thead class="text-slate-500 border-b border-slate-100">
+                                        <tr><th class="py-2 pr-3 font-medium">Siswa</th><th class="py-2 px-2 text-center font-medium">Hadir / Selesai</th><th class="py-2 px-2 text-right font-medium">Tagihan</th><th class="py-2 px-2 text-right font-medium">Dibayar</th><th class="py-2 pl-2 text-right font-medium">Sisa</th></tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        ${studentMonthSummary.map(item => {
+                                            const invoiceState = item.invoice
+                                                ? item.remaining ? 'Belum lunas' : 'Lunas'
+                                                : item.amount ? 'Dibuat saat sesi selesai' : 'Atur tarif';
+                                            return `<tr><td class="py-2 pr-3"><p>${escapeHtml(item.student.name)}</p><p class="text-[11px] text-slate-400">${escapeHtml(invoiceState)}</p></td><td class="py-2 px-2 text-center">${item.attendedSessions}/${item.sessionCount}</td><td class="py-2 px-2 text-right">${formatRupiah(item.amount)}</td><td class="py-2 px-2 text-right text-green-700">${formatRupiah(item.paid)}</td><td class="py-2 pl-2 text-right text-amber-700">${formatRupiah(item.remaining)}</td></tr>`;
+                                        }).join('')}
+                                        ${studentMonthSummary.length ? '' : '<tr><td colspan="5" class="py-4 text-center text-slate-400">Belum ada siswa.</td></tr>'}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
 
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
                         <!-- Tabel Tagihan Siswa -->
@@ -983,7 +1406,7 @@
                         <!-- Tabel Rekap Honor Tentor -->
                         <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
                             <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                                <h2 class="font-semibold text-slate-800">Rekap Honor Tentor</h2>
+                                <h2 class="font-semibold text-slate-800">Rekap Honor Tentor Bulan Terpilih</h2>
                                 <button onclick="showTutorPayoutModal()" class="text-sm text-primary-600 font-medium hover:underline">Bayar Tentor</button>
                             </div>
                             <div class="flex-1 overflow-auto max-h-96">
@@ -1078,6 +1501,15 @@
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
+        }
+
+        function updateFinanceMonth(month) {
+            if (!/^\d{4}-\d{2}$/.test(month)) {
+                showToast('Bulan rekap tidak valid.', 'error');
+                return;
+            }
+            selectedFinanceMonth = month;
+            navigate('finance');
         }
 
         function formatRupiah(amount) {
@@ -1197,9 +1629,10 @@
                 case 'Selesai': colors = 'bg-green-100 text-green-700'; break;
                 case 'Berjalan': colors = 'bg-blue-100 text-blue-700'; break;
                 case 'Dijadwalkan': colors = 'bg-purple-100 text-purple-700'; break;
+                case 'Batal': colors = 'bg-red-100 text-red-700'; break;
                 default: colors = 'bg-slate-100 text-slate-700';
             }
-            return `<span class="px-2.5 py-1 rounded-full text-xs font-medium ${colors}">${status}</span>`;
+            return `<span class="px-2.5 py-1 rounded-full text-xs font-medium ${colors}">${escapeHtml(status)}</span>`;
         }
 
         function showToast(message, type = 'success') {
@@ -1293,6 +1726,11 @@
                             <input type="text" id="inp-phone" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500" placeholder="081xxx">
                         </div>
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Tarif bulanan (Rp)</label>
+                        <input type="number" id="inp-monthly-fee" min="0" step="1" value="0" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500">
+                        <p class="text-xs text-slate-500 mt-1">Tagihan bulanan dibuat otomatis setelah sesi pertama bulan tersebut selesai. Isi 0 jika belum menentukan tarif.</p>
+                    </div>
                 </div>
             `;
             openModal('Tambah Data Siswa', formHtml, 'Simpan Siswa', () => {
@@ -1301,6 +1739,11 @@
                 const grade = document.getElementById('inp-grade').value || '-';
                 const parent = document.getElementById('inp-parent').value || '-';
                 const phone = document.getElementById('inp-phone').value || '-';
+                const monthlyFee = Number(document.getElementById('inp-monthly-fee').value);
+                if (!Number.isSafeInteger(monthlyFee) || monthlyFee < 0) {
+                    showToast('Tarif bulanan harus berupa nominal Rupiah positif atau 0.', 'error');
+                    return false;
+                }
                 
                 db.students.push({
                     id: db.students.length + 1,
@@ -1311,11 +1754,48 @@
                     parentName: parent,
                     phone: phone,
                     program: 'Privat',
-                    status: 'Aktif'
+                    status: 'Aktif',
+                    monthlyFee
                 });
                 
                 saveDatabaseAfterChange(`Data siswa ${name} berhasil disimpan.`);
                 if(currentState.route === 'students') navigate('students');
+            });
+        }
+
+        function showStudentMonthlyFeeModal(studentId) {
+            const student = db.students.find(item => String(item.id) === String(studentId));
+            if (!student) {
+                showToast('Data siswa tidak ditemukan.', 'error');
+                return;
+            }
+            openModal(`Tarif Bulanan - ${student.name}`, `
+                <div class="space-y-3">
+                    <label for="student-monthly-fee" class="block text-sm font-medium text-slate-700">Tarif tetap per bulan (Rp)</label>
+                    <input id="student-monthly-fee" type="number" min="0" step="1" value="${Number(student.monthlyFee) || 0}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    <p class="text-xs text-slate-500">Tarif ini menjadi nominal invoice bulanan. Perubahan tarif berlaku untuk invoice yang dibuat setelah perubahan, bukan invoice lama.</p>
+                </div>
+            `, 'Simpan Tarif', () => {
+                const monthlyFee = Number(document.getElementById('student-monthly-fee').value);
+                if (!Number.isSafeInteger(monthlyFee) || monthlyFee < 0) {
+                    showToast('Tarif harus berupa nominal Rupiah positif atau 0.', 'error');
+                    return false;
+                }
+                student.monthlyFee = monthlyFee;
+                const completedSchedule = monthlyFee > 0
+                    ? db.schedules.find(schedule =>
+                        schedule.status === 'Selesai' &&
+                        String(schedule.date || '').slice(0, 7) === selectedFinanceMonth &&
+                        (schedule.studentIds || []).some(id => String(id) === String(student.id))
+                    )
+                    : null;
+                const invoiceResult = completedSchedule
+                    ? createMonthlyInvoicesForSchedule(completedSchedule)
+                    : { created: 0 };
+                saveDatabaseAfterChange(invoiceResult.created
+                    ? 'Tarif diperbarui dan invoice bulanan yang tertunda dibuat.'
+                    : 'Tarif bulanan siswa berhasil diperbarui.');
+                navigate('students');
             });
         }
 
@@ -1469,20 +1949,198 @@
             });
         }
 
+        function formatScheduleDate(date) {
+            if (!date) return '';
+            return new Intl.DateTimeFormat('id-ID', {
+                weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+            }).format(new Date(`${date}T12:00:00`));
+        }
+
+        function changeScheduleDate(days) {
+            const date = new Date(`${selectedScheduleDate}T12:00:00`);
+            date.setDate(date.getDate() + days);
+            selectedScheduleDate = getLocalDateString(date);
+            navigate('schedules');
+        }
+
+        function getScheduleDates(startDate, repeatUntil, weekdays) {
+            if (!startDate) return { dates: [], error: 'Tanggal jadwal wajib diisi.' };
+            if (!repeatUntil) return { dates: [startDate], error: '' };
+            if (!weekdays.length) return { dates: [], error: 'Pilih minimal satu hari untuk jadwal rutin.' };
+
+            const startParts = startDate.split('-').map(Number);
+            const endParts = repeatUntil.split('-').map(Number);
+            const startOrdinal = Date.UTC(startParts[0], startParts[1] - 1, startParts[2]);
+            const endOrdinal = Date.UTC(endParts[0], endParts[1] - 1, endParts[2]);
+            const dayCount = Math.floor((endOrdinal - startOrdinal) / 86400000);
+            if (dayCount < 0) return { dates: [], error: 'Tanggal akhir rutin tidak boleh sebelum tanggal mulai.' };
+            if (dayCount > 366) return { dates: [], error: 'Jadwal rutin dibatasi maksimal satu tahun.' };
+
+            const selectedWeekdays = new Set(weekdays.map(Number));
+            const dates = [];
+            for (let offset = 0; offset <= dayCount; offset++) {
+                const date = new Date(startOrdinal + offset * 86400000);
+                if (selectedWeekdays.has(date.getUTCDay())) dates.push(date.toISOString().slice(0, 10));
+            }
+            return dates.length
+                ? { dates, error: '' }
+                : { dates: [], error: 'Tidak ada tanggal yang cocok dengan hari rutin yang dipilih.' };
+        }
+
+        function buildScheduleCandidates(values) {
+            const generated = getScheduleDates(values.date, values.repeatUntil, values.weekdays);
+            if (generated.error) return generated;
+            if (!values.startTime || !values.endTime || values.endTime <= values.startTime) {
+                return { dates: [], error: 'Jam selesai harus setelah jam mulai.' };
+            }
+            return {
+                dates: generated.dates.map(date => ({
+                    date,
+                    startTime: values.startTime,
+                    endTime: values.endTime,
+                    tutorId: values.tutorId,
+                    studentIds: [values.studentId],
+                    room: values.room,
+                    subject: values.subject,
+                    type: values.type
+                })),
+                error: ''
+            };
+        }
+
+        function getScheduleConflicts(candidates, excludedScheduleId) {
+            const conflicts = [];
+            const existing = db.schedules.filter(schedule =>
+                schedule.status !== 'Batal' && String(schedule.id) !== String(excludedScheduleId)
+            );
+            candidates.forEach(candidate => {
+                existing.forEach(schedule => {
+                    if (candidate.date !== schedule.date ||
+                        !schedule.startTime || !schedule.endTime ||
+                        candidate.startTime >= schedule.endTime ||
+                        candidate.endTime <= schedule.startTime) return;
+
+                    const reasons = [];
+                    if (String(candidate.tutorId) === String(schedule.tutorId)) {
+                        const tutor = db.tutors.find(item => String(item.id) === String(schedule.tutorId));
+                        reasons.push(`tentor ${tutor ? tutor.name : schedule.tutorId}`);
+                    }
+                    const studentIds = (candidate.studentIds || []).filter(id =>
+                        (schedule.studentIds || []).some(existingId => String(existingId) === String(id))
+                    );
+                    studentIds.forEach(id => {
+                        const student = db.students.find(item => String(item.id) === String(id));
+                        reasons.push(`siswa ${student ? student.name : id}`);
+                    });
+                    const candidateRoom = String(candidate.room || '').trim().toLocaleLowerCase('id-ID');
+                    const existingRoom = String(schedule.room || '').trim().toLocaleLowerCase('id-ID');
+                    if (candidateRoom && existingRoom && candidateRoom === existingRoom) {
+                        reasons.push(`ruang ${candidate.room}`);
+                    }
+                    if (reasons.length) {
+                        conflicts.push(`${formatScheduleDate(candidate.date)} ${candidate.startTime}-${candidate.endTime}: bentrok dengan jadwal ${schedule.subject} (${reasons.join(', ')}).`);
+                    }
+                });
+            });
+            return [...new Set(conflicts)];
+        }
+
+        function getScheduleFormValues() {
+            return {
+                date: document.getElementById('inp-sched-date').value,
+                repeatUntil: document.getElementById('inp-sched-recurring').checked
+                    ? document.getElementById('inp-sched-until').value
+                    : '',
+                weekdays: document.querySelectorAll('input[name="sched-weekday"]:checked').length
+                    ? Array.from(document.querySelectorAll('input[name="sched-weekday"]:checked')).map(input => input.value)
+                    : [],
+                startTime: document.getElementById('inp-sched-start').value,
+                endTime: document.getElementById('inp-sched-end').value,
+                type: document.getElementById('inp-sched-type').value,
+                studentId: Number(document.getElementById('inp-sched-student').value),
+                tutorId: Number(document.getElementById('inp-sched-tutor').value),
+                subject: document.getElementById('inp-sched-subject').value.trim() || 'Umum',
+                room: document.getElementById('inp-sched-room').value.trim(),
+                manualTutorFee: Number(document.getElementById('inp-sched-manual-fee').value)
+            };
+        }
+
+        function updateScheduleConflictPreview() {
+            const warning = document.getElementById('schedule-conflict-warning');
+            if (!warning) return;
+            const values = getScheduleFormValues();
+            const generated = buildScheduleCandidates(values);
+            if (generated.error) {
+                warning.textContent = generated.error;
+                warning.className = 'rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700 whitespace-pre-line';
+                return;
+            }
+            const conflicts = getScheduleConflicts(generated.dates);
+            warning.textContent = conflicts.length
+                ? `Peringatan bentrok jadwal:\\n${conflicts.join('\\n')}`
+                : `Tidak ditemukan bentrok pada ${generated.dates.length} sesi.`;
+            warning.className = conflicts.length
+                ? 'rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700 whitespace-pre-line'
+                : 'rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700 whitespace-pre-line';
+        }
+
+        function toggleRecurringFields() {
+            const enabled = document.getElementById('inp-sched-recurring').checked;
+            document.getElementById('schedule-recurring-fields').classList.toggle('hidden', !enabled);
+            updateScheduleConflictPreview();
+        }
+
+        function updateScheduleHonorField() {
+            const tutorId = document.getElementById('inp-sched-tutor').value;
+            const tutor = db.tutors.find(item => String(item.id) === String(tutorId));
+            const isPercentage = tutor?.feeRules?.type === 'Persentase';
+            const wrapper = document.getElementById('schedule-manual-honor-field');
+            wrapper.classList.toggle('hidden', !isPercentage);
+            const input = document.getElementById('inp-sched-manual-fee');
+            input.required = isPercentage;
+        }
+
+        function generateAttendanceToken() {
+            if (!window.crypto || !window.crypto.getRandomValues) {
+                throw new Error('Browser tidak mendukung token presensi yang aman. Gunakan browser modern melalui HTTPS.');
+            }
+            const bytes = new Uint8Array(24);
+            window.crypto.getRandomValues(bytes);
+            return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+        }
+
         function showAddScheduleModal() {
-            const tutorOptions = db.tutors.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
-            const studentOptions = db.students.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+            if (!db.tutors.length || !db.students.length) {
+                showToast('Data siswa dan tentor harus tersedia sebelum membuat jadwal.', 'error');
+                return;
+            }
+            const tutorOptions = db.tutors.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+            const studentOptions = db.students.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+            const today = selectedScheduleDate || getLocalDateString();
+            const defaultEndDate = new Date(`${today}T12:00:00`);
+            defaultEndDate.setDate(defaultEndDate.getDate() + 84);
+            const defaultEnd = getLocalDateString(defaultEndDate);
+            const defaultWeekday = String(new Date(`${today}T12:00:00`).getDay());
+            const weekdayOptions = [
+                ['1', 'Senin'], ['2', 'Selasa'], ['3', 'Rabu'], ['4', 'Kamis'],
+                ['5', 'Jumat'], ['6', 'Sabtu'], ['0', 'Minggu']
+            ].map(([value, label]) => `
+                <label class="inline-flex items-center gap-1.5 text-sm text-slate-600">
+                    <input type="checkbox" name="sched-weekday" value="${value}" ${value === defaultWeekday ? 'checked' : ''} onchange="updateScheduleConflictPreview()" class="rounded border-slate-300 text-primary-600">
+                    ${label}
+                </label>
+            `).join('');
 
             const formHtml = `
                 <div class="space-y-4">
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-slate-700 mb-1">Tanggal</label>
-                            <input type="date" id="inp-sched-date" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 bg-white">
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Tanggal mulai</label>
+                            <input type="date" id="inp-sched-date" value="${today}" onchange="updateScheduleConflictPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-slate-700 mb-1">Program</label>
-                            <select id="inp-sched-type" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 bg-white">
+                            <select id="inp-sched-type" onchange="updateScheduleConflictPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
                                 <option value="Privat">Privat</option>
                                 <option value="Kelompok">Kelompok</option>
                             </select>
@@ -1490,70 +2148,526 @@
                     </div>
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-slate-700 mb-1">Jam Mulai</label>
-                            <input type="time" id="inp-sched-start" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 bg-white">
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Jam mulai</label>
+                            <input type="time" id="inp-sched-start" onchange="updateScheduleConflictPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-slate-700 mb-1">Jam Selesai</label>
-                            <input type="time" id="inp-sched-end" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 bg-white">
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Jam selesai</label>
+                            <input type="time" id="inp-sched-end" onchange="updateScheduleConflictPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
                         </div>
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-slate-700 mb-1">Siswa</label>
-                        <select id="inp-sched-student" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 bg-white">
-                            ${studentOptions}
-                        </select>
+                        <select id="inp-sched-student" onchange="updateScheduleConflictPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">${studentOptions}</select>
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-slate-700 mb-1">Tentor</label>
-                        <select id="inp-sched-tutor" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500 bg-white">
-                            ${tutorOptions}
-                        </select>
+                        <select id="inp-sched-tutor" onchange="updateScheduleHonorField(); updateScheduleConflictPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">${tutorOptions}</select>
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium text-slate-700 mb-1">Mata Pelajaran</label>
-                        <input type="text" id="inp-sched-subject" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:border-primary-500" placeholder="Contoh: Matematika">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Mata pelajaran</label>
+                            <input type="text" id="inp-sched-subject" oninput="updateScheduleConflictPreview()" placeholder="Contoh: Matematika" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Ruangan / lokasi (opsional)</label>
+                            <input type="text" id="inp-sched-room" oninput="updateScheduleConflictPreview()" placeholder="Contoh: Ruang 1" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
                     </div>
+                    <div id="schedule-manual-honor-field" class="hidden">
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Honor tentor per sesi (Rp)</label>
+                        <input type="number" id="inp-sched-manual-fee" min="1" step="1" placeholder="Masukkan honor yang disepakati" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        <p class="text-xs text-slate-500 mt-1">Fee persentase dicatat manual karena tagihan siswa belum terkait ke sesi tertentu.</p>
+                    </div>
+                    <label class="flex items-center gap-2 text-sm font-medium text-slate-700">
+                        <input id="inp-sched-recurring" type="checkbox" onchange="toggleRecurringFields()" class="rounded border-slate-300 text-primary-600">
+                        Ulangi jadwal setiap minggu
+                    </label>
+                    <div id="schedule-recurring-fields" class="hidden space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <div class="text-sm font-medium text-slate-700">Hari les</div>
+                        <div class="flex flex-wrap gap-x-4 gap-y-2">${weekdayOptions}</div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Ulangi sampai</label>
+                            <input type="date" id="inp-sched-until" value="${defaultEnd}" onchange="updateScheduleConflictPreview()" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                            <p class="text-xs text-slate-500 mt-1">Maksimal satu tahun; tanggal mulai dan akhir termasuk dalam seri.</p>
+                        </div>
+                    </div>
+                    <div id="schedule-conflict-warning" class="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500 whitespace-pre-line">Lengkapi tanggal dan waktu untuk memeriksa bentrok.</div>
                 </div>
             `;
 
-            openModal('Buat Jadwal Baru', formHtml, 'Simpan Jadwal', () => {
-                const date = document.getElementById('inp-sched-date').value;
-                const start = document.getElementById('inp-sched-start').value;
-                const end = document.getElementById('inp-sched-end').value;
-                const type = document.getElementById('inp-sched-type').value;
-                const studentId = parseInt(document.getElementById('inp-sched-student').value);
-                const tutorId = parseInt(document.getElementById('inp-sched-tutor').value);
-                const subject = document.getElementById('inp-sched-subject').value || 'Umum';
-
-                if(!date || !start || !end) {
-                    showToast('Tanggal dan waktu tidak boleh kosong!', 'error');
-                    // Mencegah modal tertutup jika gagal validasi
-                    modalContainer.classList.remove('hidden');
-                    return;
+            openModal('Buat Jadwal / Template Rutin', formHtml, 'Simpan Jadwal', () => {
+                const values = getScheduleFormValues();
+                const recurring = Boolean(values.repeatUntil);
+                const generated = buildScheduleCandidates(values);
+                if (generated.error) {
+                    showToast(generated.error, 'error');
+                    return false;
+                }
+                const tutor = db.tutors.find(item => String(item.id) === String(values.tutorId));
+                if (tutor?.feeRules?.type === 'Persentase' &&
+                    (!Number.isSafeInteger(values.manualTutorFee) || values.manualTutorFee <= 0)) {
+                    showToast('Masukkan honor manual per sesi untuk fee tentor Persentase.', 'error');
+                    return false;
                 }
 
-                db.schedules.unshift({
-                    id: db.schedules.length + 1,
-                    date: date,
-                    startTime: start,
-                    endTime: end,
-                    tutorId: tutorId,
-                    studentIds: [studentId],
-                    subject: subject,
-                    type: type,
-                    status: 'Dijadwalkan',
-                    hasJournal: false
-                });
+                const conflicts = getScheduleConflicts(generated.dates);
+                if (conflicts.length && !window.confirm(`Bentrok jadwal ditemukan:\n\n${conflicts.join('\n')}\n\nTetap simpan jadwal?`)) {
+                    return false;
+                }
 
-                saveDatabaseAfterChange('Jadwal baru berhasil disimpan.');
-                if(currentState.route === 'schedules') navigate('schedules');
+                const firstId = nextRecordId(db.schedules);
+                const recurrenceId = recurring ? createReceiptNumber('REC', firstId) : '';
+                try {
+                    const newSchedules = generated.dates.map((candidate, index) => ({
+                        id: firstId + index,
+                        date: candidate.date,
+                        startTime: values.startTime,
+                        endTime: values.endTime,
+                        tutorId: values.tutorId,
+                        studentIds: [values.studentId],
+                        subject: values.subject,
+                        type: values.type,
+                        room: values.room,
+                        status: 'Dijadwalkan',
+                        hasJournal: false,
+                        attendanceToken: generateAttendanceToken(),
+                        attendanceRecords: [],
+                        rescheduleHistory: [],
+                        manualTutorFee: tutor?.feeRules?.type === 'Persentase' ? values.manualTutorFee : 0,
+                        recurrenceId: recurrenceId || null,
+                        recurrence: recurring ? {
+                            weekdays: values.weekdays.map(Number),
+                            startDate: values.date,
+                            endDate: values.repeatUntil
+                        } : null
+                    }));
+                    db.schedules.push(...newSchedules);
+                } catch (error) {
+                    showToast(error.message || 'Token presensi gagal dibuat.', 'error');
+                    return false;
+                }
+
+                selectedScheduleDate = generated.dates[0].date;
+                saveDatabaseAfterChange(`${generated.dates.length} jadwal berhasil disimpan.`);
+                if (currentState.route === 'schedules') navigate('schedules');
+            });
+            updateScheduleHonorField();
+            updateScheduleConflictPreview();
+        }
+
+        function createTutorEarningForSchedule(schedule) {
+            if (db.tutorEarnings.some(earning => String(earning.scheduleId) === String(schedule.id))) return null;
+            const tutor = db.tutors.find(item => String(item.id) === String(schedule.tutorId));
+            if (!tutor?.feeRules) return null;
+
+            const rule = tutor.feeRules;
+            const studentAttendanceCount = (Array.isArray(schedule.attendanceRecords) ? schedule.attendanceRecords : [])
+                .filter(record => record.participantType === 'student' && record.checkInAt).length;
+            const start = schedule.actualStartAt ? new Date(schedule.actualStartAt) : null;
+            const end = schedule.actualEndAt ? new Date(schedule.actualEndAt) : null;
+            let amount = 0;
+            if (rule.type === 'Persentase') {
+                amount = Number(schedule.manualTutorFee) || 0;
+            } else if (rule.type === 'Per Pertemuan') {
+                amount = Number(rule.value) || 0;
+            } else if (rule.type === 'Per Siswa') {
+                amount = (Number(rule.value) || 0) * studentAttendanceCount;
+            } else if (rule.type === 'Per Jam' && start && end && end > start) {
+                amount = Math.round((Number(rule.value) || 0) * (end.getTime() - start.getTime()) / 3600000);
+            }
+            if (!Number.isSafeInteger(amount) || amount <= 0) return null;
+
+            const earning = {
+                id: nextRecordId(db.tutorEarnings),
+                tutorId: schedule.tutorId,
+                scheduleId: schedule.id,
+                amount,
+                paidAmount: 0,
+                status: 'Pending',
+                date: schedule.date,
+                actualStartAt: schedule.actualStartAt || null,
+                actualEndAt: schedule.actualEndAt || null,
+                attendanceCount: studentAttendanceCount
+            };
+            db.tutorEarnings.push(earning);
+            return earning;
+        }
+
+        function getCheckedInStudents(schedule) {
+            const attendanceRecords = Array.isArray(schedule.attendanceRecords) ? schedule.attendanceRecords : [];
+            return (schedule.studentIds || [])
+                .filter(studentId => attendanceRecords.some(record =>
+                    record.participantType === 'student' &&
+                    String(record.participantId) === String(studentId) &&
+                    record.checkInAt
+                ))
+                .map(studentId => db.students.find(student => String(student.id) === String(studentId)))
+                .filter(Boolean);
+        }
+
+        function saveScheduleLearningJournal(schedule, material, evaluations) {
+            const checkedInStudents = getCheckedInStudents(schedule);
+            const evaluationByStudent = new Map(evaluations.map(item => [String(item.studentId), item.notes.trim()]));
+            schedule.lessonMaterial = material.trim();
+            checkedInStudents.forEach(student => {
+                const notes = evaluationByStudent.get(String(student.id));
+                if (!notes) throw new Error(`Evaluasi ${student.name} wajib diisi sebelum sesi selesai.`);
+                let journal = db.journals.find(item =>
+                    String(item.scheduleId) === String(schedule.id) &&
+                    String(item.studentId) === String(student.id)
+                );
+                if (!journal) {
+                    journal = {
+                        id: nextRecordId(db.journals),
+                        scheduleId: schedule.id,
+                        studentId: student.id,
+                        tutorId: schedule.tutorId,
+                        date: schedule.date
+                    };
+                    db.journals.push(journal);
+                }
+                journal.material = material.trim();
+                journal.notes = notes;
+                journal.mastery = journal.mastery || 'Catatan tentor';
+                journal.recommendation = journal.recommendation || '';
+                journal.score = journal.score == null ? '' : journal.score;
+                journal.createdAt = journal.createdAt || new Date().toISOString();
+                ensureDailyWAReport(student, schedule.date, journal.id);
+            });
+            (schedule.studentIds || []).forEach(studentId => {
+                const student = db.students.find(item => String(item.id) === String(studentId));
+                if (student) ensureDailyWAReport(student, schedule.date);
+            });
+            schedule.hasJournal = checkedInStudents.length > 0;
+            return checkedInStudents.length;
+        }
+
+        function ensureDailyWAReport(student, date, journalId) {
+            let report = db.waReports.find(item =>
+                String(item.studentId) === String(student.id) &&
+                String(item.date || item.reportDate || '') === String(date)
+            );
+            if (!report && journalId != null) {
+                report = db.waReports.find(item => String(item.journalId) === String(journalId));
+            }
+            if (!report) {
+                report = {
+                    id: nextRecordId(db.waReports),
+                    studentId: student.id,
+                    date,
+                    journalIds: [],
+                    status: 'Menunggu Persetujuan'
+                };
+                db.waReports.push(report);
+            }
+            report.studentId = student.id;
+            report.date = date;
+            report.journalIds = Array.isArray(report.journalIds) ? report.journalIds : [];
+            if (report.journalId != null && !report.journalIds.some(id => String(id) === String(report.journalId))) {
+                report.journalIds.push(report.journalId);
+            }
+            if (journalId != null && !report.journalIds.some(id => String(id) === String(journalId))) {
+                report.journalIds.push(journalId);
+            }
+            report.journalId = report.journalIds[0] == null ? null : report.journalIds[0];
+            if (report.status === 'Terkirim') {
+                report.status = 'Menunggu Persetujuan';
+                delete report.sentAt;
+            }
+        }
+
+        function getMonthEndDate(month) {
+            const [year, monthNumber] = month.split('-').map(Number);
+            const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+            return `${year}-${String(monthNumber).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        }
+
+        function createMonthlyInvoicesForSchedule(schedule) {
+            const billingMonth = String(schedule.date).slice(0, 7);
+            const dueDate = getMonthEndDate(billingMonth);
+            const result = { created: 0, missingTariff: [] };
+            (schedule.studentIds || []).forEach(studentId => {
+                const student = db.students.find(item => String(item.id) === String(studentId));
+                if (!student || student.status !== 'Aktif') return;
+                const amount = Number(student.monthlyFee);
+                if (!Number.isSafeInteger(amount) || amount <= 0) {
+                    result.missingTariff.push(student.name);
+                    return;
+                }
+                const alreadyInvoiced = db.invoices.some(invoice =>
+                    String(invoice.studentId) === String(student.id) &&
+                    (invoice.billingMonth === billingMonth ||
+                     String(invoice.dueDate || '').slice(0, 7) === billingMonth)
+                );
+                if (alreadyInvoiced) return;
+                const invoiceId = nextRecordId(db.invoices);
+                db.invoices.unshift({
+                    id: invoiceId,
+                    studentId: student.id,
+                    invoiceNumber: createReceiptNumber('INV', invoiceId),
+                    amount,
+                    paidAmount: 0,
+                    dueDate,
+                    billingMonth,
+                    description: `Biaya belajar bulanan ${billingMonth}`,
+                    status: 'Belum Lunas'
+                });
+                result.created++;
+            });
+            return result;
+        }
+
+        function setScheduleStatus(schedule, nextStatus, timestamp) {
+            schedule.status = nextStatus;
+            if (nextStatus === 'Berjalan') {
+                schedule.ownerMarkedStartAt = timestamp;
+            }
+            if (nextStatus === 'Selesai') {
+                schedule.actualEndAt = timestamp;
+                schedule.actualEndTime = new Date(timestamp).toLocaleTimeString('id-ID', {
+                    hour: '2-digit', minute: '2-digit', hour12: false
+                });
+            }
+        }
+
+        function startScheduleManually(scheduleId) {
+            const schedule = db.schedules.find(item => String(item.id) === String(scheduleId));
+            if (!schedule || schedule.status !== 'Dijadwalkan') return;
+            setScheduleStatus(schedule, 'Berjalan', new Date().toISOString());
+            saveDatabaseAfterChange('Sesi ditandai sedang berjalan.');
+            navigate('schedules');
+        }
+
+        function completeScheduleManually(scheduleId) {
+            const schedule = db.schedules.find(item => String(item.id) === String(scheduleId));
+            if (!schedule || schedule.status !== 'Berjalan') return;
+            const tutorAttendance = (Array.isArray(schedule.attendanceRecords) ? schedule.attendanceRecords : []).find(record =>
+                record.participantType === 'tutor' && record.checkInAt
+            );
+            if (!tutorAttendance) {
+                showToast('Sesi belum dapat diselesaikan: presensi check-in tentor belum tervalidasi.', 'error');
+                return;
+            }
+            const students = getCheckedInStudents(schedule);
+            const evaluationFields = students.map(student => `
+                <div>
+                    <label for="complete-evaluation-${escapeHtml(student.id)}" class="block text-sm font-medium text-slate-700 mb-1">Evaluasi ${escapeHtml(student.name)}</label>
+                    <textarea id="complete-evaluation-${escapeHtml(student.id)}" data-student-id="${escapeHtml(student.id)}" rows="2" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Catatan perkembangan siswa"></textarea>
+                </div>
+            `).join('');
+            openModal('Jurnal & Selesaikan Sesi', `
+                <div class="space-y-4">
+                    <div>
+                        <label for="complete-material" class="block text-sm font-medium text-slate-700 mb-1">Materi / bab yang diajarkan</label>
+                        <textarea id="complete-material" rows="2" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Ringkas materi sesi"></textarea>
+                    </div>
+                    ${evaluationFields || '<p class="text-sm text-slate-500">Tidak ada siswa yang check-in; materi sesi tetap wajib dicatat.</p>'}
+                    <p class="text-xs text-slate-500">Jam pulang akan dicatat saat owner menyimpan dan sesi diselesaikan.</p>
+                </div>
+            `, 'Simpan Jurnal & Selesaikan', () => {
+                const material = document.getElementById('complete-material').value.trim();
+                const evaluations = Array.from(document.querySelectorAll('#modal-body textarea[data-student-id]'))
+                    .map(input => ({ studentId: Number(input.dataset.studentId), notes: input.value.trim() }));
+                if (!material || evaluations.some(item => !item.notes)) {
+                    showToast('Isi materi dan evaluasi semua siswa yang hadir.', 'error');
+                    return false;
+                }
+                try {
+                    saveScheduleLearningJournal(schedule, material, evaluations);
+                } catch (error) {
+                    showToast(error.message, 'error');
+                    return false;
+                }
+                setScheduleStatus(schedule, 'Selesai', new Date().toISOString());
+                const earning = createTutorEarningForSchedule(schedule);
+                const invoices = createMonthlyInvoicesForSchedule(schedule);
+                const messages = ['Sesi dan jurnal berhasil diselesaikan.'];
+                if (earning) messages.push(`Honor ${formatRupiah(earning.amount)} tercatat.`);
+                if (invoices.created) messages.push(`${invoices.created} tagihan bulanan dibuat.`);
+                if (invoices.missingTariff.length) messages.push(`Tarif belum diatur: ${invoices.missingTariff.join(', ')}.`);
+                saveDatabaseAfterChange(messages.join(' '));
+                navigate('schedules');
+            });
+        }
+
+        function cancelSchedule(scheduleId) {
+            const schedule = db.schedules.find(item => String(item.id) === String(scheduleId));
+            if (!schedule || !['Dijadwalkan', 'Berjalan'].includes(schedule.status)) return;
+            const tutorHasCheckedIn = (Array.isArray(schedule.attendanceRecords) ? schedule.attendanceRecords : []).some(record =>
+                record.participantType === 'tutor' && record.checkInAt
+            );
+            if (schedule.status === 'Berjalan' && tutorHasCheckedIn) {
+                showToast('Sesi yang sudah dihadiri tentor harus diselesaikan agar jam dan honor tercatat.', 'error');
+                return;
+            }
+            const reason = window.prompt('Masukkan alasan pembatalan jadwal:');
+            if (reason === null) return;
+            if (!reason.trim()) {
+                showToast('Alasan pembatalan wajib diisi.', 'error');
+                return;
+            }
+            if (!window.confirm('Batalkan sesi ini? Sesi yang dibatalkan tidak menghasilkan honor.')) return;
+
+            schedule.status = 'Batal';
+            schedule.cancellationReason = reason.trim();
+            schedule.cancelledAt = new Date().toISOString();
+            saveDatabaseAfterChange('Jadwal berhasil dibatalkan.');
+            navigate('schedules');
+        }
+
+        function showRescheduleModal(scheduleId) {
+            const schedule = db.schedules.find(item => String(item.id) === String(scheduleId));
+            if (!schedule || schedule.status !== 'Dijadwalkan') return;
+            const formHtml = `
+                <div class="space-y-4">
+                    <p class="text-sm text-slate-500">Jadwal saat ini: ${escapeHtml(formatScheduleDate(schedule.date))}, ${escapeHtml(schedule.startTime)}-${escapeHtml(schedule.endTime)}</p>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Tanggal baru</label>
+                            <input id="reschedule-date" type="date" value="${escapeHtml(schedule.date)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Ruangan / lokasi</label>
+                            <input id="reschedule-room" value="${escapeHtml(schedule.room || '')}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Jam mulai baru</label>
+                            <input id="reschedule-start" type="time" value="${escapeHtml(schedule.startTime)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Jam selesai baru</label>
+                            <input id="reschedule-end" type="time" value="${escapeHtml(schedule.endTime)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Alasan perubahan</label>
+                        <textarea id="reschedule-reason" rows="3" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Contoh: permintaan siswa"></textarea>
+                    </div>
+                    <div id="reschedule-conflict-warning" class="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500 whitespace-pre-line"></div>
+                </div>
+            `;
+            openModal('Reschedule Sesi', formHtml, 'Simpan Perubahan', () => {
+                const date = document.getElementById('reschedule-date').value;
+                const startTime = document.getElementById('reschedule-start').value;
+                const endTime = document.getElementById('reschedule-end').value;
+                const room = document.getElementById('reschedule-room').value.trim();
+                const reason = document.getElementById('reschedule-reason').value.trim();
+                if (!date || !startTime || !endTime || endTime <= startTime || !reason) {
+                    showToast('Tanggal, rentang waktu yang valid, dan alasan reschedule wajib diisi.', 'error');
+                    return false;
+                }
+                const proposed = [{
+                    date, startTime, endTime, room,
+                    tutorId: schedule.tutorId,
+                    studentIds: schedule.studentIds || []
+                }];
+                const conflicts = getScheduleConflicts(proposed, schedule.id);
+                if (conflicts.length && !window.confirm(`Bentrok jadwal ditemukan:\n\n${conflicts.join('\n')}\n\nTetap reschedule?`)) {
+                    return false;
+                }
+                const newAttendanceToken = generateAttendanceToken();
+                schedule.rescheduleHistory = Array.isArray(schedule.rescheduleHistory) ? schedule.rescheduleHistory : [];
+                schedule.rescheduleHistory.push({
+                    oldDate: schedule.date,
+                    oldStartTime: schedule.startTime,
+                    oldEndTime: schedule.endTime,
+                    newDate: date,
+                    newStartTime: startTime,
+                    newEndTime: endTime,
+                    reason,
+                    changedAt: new Date().toISOString()
+                });
+                schedule.date = date;
+                schedule.startTime = startTime;
+                schedule.endTime = endTime;
+                schedule.room = room;
+                schedule.attendanceToken = newAttendanceToken;
+                selectedScheduleDate = date;
+                saveDatabaseAfterChange('Jadwal berhasil dipindahkan. Token presensi lama tidak berlaku.');
+                navigate('schedules');
+            });
+        }
+
+        function showAttendanceToken(scheduleId) {
+            const schedule = db.schedules.find(item => String(item.id) === String(scheduleId));
+            if (!schedule || !schedule.attendanceToken) {
+                showToast('Token presensi belum tersedia untuk sesi ini.', 'error');
+                return;
+            }
+            const link = new URL(window.location.href);
+            link.search = '';
+            link.hash = '';
+            link.searchParams.set('checkin', schedule.attendanceToken);
+            openModal('Token Presensi Sesi', `
+                <div class="space-y-4">
+                    <p class="text-sm text-slate-600">${escapeHtml(schedule.subject)} · ${escapeHtml(formatScheduleDate(schedule.date))}</p>
+                    <label class="block text-sm font-medium text-slate-700" for="attendance-link">Tautan check-in / check-out</label>
+                    <input id="attendance-link" readonly value="${escapeHtml(link.href)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-slate-50">
+                    <div class="flex gap-2">
+                        <button onclick="copyAttendanceLink()" class="px-3 py-2 text-sm font-medium text-primary-700 border border-primary-200 rounded-lg hover:bg-primary-50">Salin tautan</button>
+                        <button onclick="copyAttendanceToken()" class="px-3 py-2 text-sm font-medium text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50">Salin token</button>
+                    </div>
+                    <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">Bagikan hanya kepada peserta sesi. Token bersama tidak memverifikasi identitas orang yang memilih nama.</p>
+                </div>
+            `, 'Tutup', () => {});
+            window.currentAttendanceToken = schedule.attendanceToken;
+        }
+
+        async function copyAttendanceLink() {
+            const input = document.getElementById('attendance-link');
+            try {
+                await navigator.clipboard.writeText(input.value);
+                showToast('Tautan presensi berhasil disalin.');
+            } catch {
+                input.select();
+                document.execCommand('copy');
+                showToast('Tautan presensi berhasil disalin.');
+            }
+        }
+
+        async function copyAttendanceToken() {
+            try {
+                await navigator.clipboard.writeText(window.currentAttendanceToken || '');
+                showToast('Token presensi berhasil disalin.');
+            } catch {
+                showToast('Browser tidak mengizinkan penyalinan token.', 'error');
+            }
+        }
+
+        function showManualHonorModal(scheduleId) {
+            const schedule = db.schedules.find(item => String(item.id) === String(scheduleId));
+            if (!schedule || schedule.status === 'Selesai' || schedule.status === 'Batal') return;
+            const formHtml = `
+                <div class="space-y-3">
+                    <p class="text-sm text-slate-600">Fee tentor Persentase dimasukkan manual per sesi karena tagihan siswa belum terhubung langsung ke sesi ini.</p>
+                    <label class="block text-sm font-medium text-slate-700" for="manual-session-fee">Honor sesi (Rp)</label>
+                    <input id="manual-session-fee" type="number" min="1" step="1" value="${Number(schedule.manualTutorFee) || ''}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                </div>
+            `;
+            openModal('Atur Honor Sesi', formHtml, 'Simpan Honor', () => {
+                const amount = Number(document.getElementById('manual-session-fee').value);
+                if (!Number.isSafeInteger(amount) || amount <= 0) {
+                    showToast('Honor harus berupa nominal Rupiah positif.', 'error');
+                    return false;
+                }
+                schedule.manualTutorFee = amount;
+                saveDatabaseAfterChange('Honor manual sesi berhasil disimpan.');
+                navigate('schedules');
             });
         }
 
         function showAddJournalModal(scheduleId) {
             const sched = db.schedules.find(s => s.id === scheduleId);
-            const student = db.students.find(st => st.id === sched.studentIds[0]); // simplify for demo
+            if (!sched) {
+                showToast('Jadwal tidak ditemukan.', 'error');
+                return;
+            }
+            const student = db.students.find(st => String(st.id) === String((sched.studentIds || [])[0]));
+            if (!student) {
+                showToast('Data siswa pada jadwal tidak ditemukan.', 'error');
+                return;
+            }
             
             const formHtml = `
                 <div class="space-y-4">
@@ -1597,40 +2711,32 @@
                 sched.hasJournal = true;
                 
                 // Add to DB
-                const newJournalId = db.journals.length + 1;
-                db.journals.push({
-                    id: newJournalId,
+                const newJournal = {
+                    id: nextRecordId(db.journals),
                     scheduleId: scheduleId,
                     studentId: student.id,
                     tutorId: sched.tutorId,
+                    date: sched.date,
                     material: document.getElementById('j-materi').value || 'Materi Pembelajaran',
                     mastery: document.getElementById('j-penguasaan').value,
                     notes: document.getElementById('j-catatan').value,
                     recommendation: document.getElementById('j-rekomendasi').value,
                     score: document.getElementById('j-nilai').value
-                });
+                };
+                db.journals.push(newJournal);
 
-                // Trigger WA Report creation (Mock)
-                db.waReports.push({
-                    id: db.waReports.length + 1,
-                    journalId: newJournalId,
-                    status: 'Menunggu Persetujuan'
-                });
+                ensureDailyWAReport(student, sched.date, newJournal.id);
+                sched.hasJournal = true;
+                sched.lessonMaterial = newJournal.material;
+                const invoices = createMonthlyInvoicesForSchedule(sched);
 
-                saveDatabaseAfterChange('Jurnal dan draft laporan WA berhasil disimpan.');
+                saveDatabaseAfterChange(invoices.created
+                    ? `Jurnal dan laporan harian tersimpan; ${invoices.created} tagihan bulanan dibuat.`
+                    : invoices.missingTariff
+                        ? 'Jurnal dan laporan harian tersimpan. Atur tarif siswa untuk membuat invoice.'
+                        : 'Jurnal dan laporan harian berhasil disimpan.');
                 if(currentState.route === 'schedules') navigate('schedules');
             });
-        }
-
-        function sendWAReport() {
-            // Remove from pending mock
-            if(db.waReports.length > 0) {
-                db.waReports.shift(); 
-                saveDatabaseAfterChange('Status laporan berhasil disimpan.');
-                setTimeout(() => {
-                    navigate('wa_reports');
-                }, 1000);
-            }
         }
 
         function showAddStandaloneJournalModal() {
@@ -1694,7 +2800,7 @@
                 const subject = document.getElementById('j-stand-subject').value || 'Materi Umum';
                 
                 // Membuat jadwal dummy agar riwayat bisa di-render dengan seragam sesuai relasi database
-                const newSchedId = db.schedules.length + 1;
+                const newSchedId = nextRecordId(db.schedules);
                 const today = new Date().toISOString().split('T')[0]; // Format YYYY-MM-DD
                 
                 db.schedules.unshift({
@@ -1710,18 +2816,21 @@
                     hasJournal: true
                 });
 
-                const newJournalId = db.journals.length + 1;
-                db.journals.unshift({
-                    id: newJournalId,
+                const newJournal = {
+                    id: nextRecordId(db.journals),
                     scheduleId: newSchedId,
                     studentId: studentId,
                     tutorId: tutorId,
+                    date: today,
                     material: document.getElementById('j-stand-materi').value || 'Materi Pembelajaran',
                     mastery: document.getElementById('j-stand-penguasaan').value,
                     notes: document.getElementById('j-stand-catatan').value || '-',
                     recommendation: document.getElementById('j-stand-rekomendasi').value || '-',
                     score: document.getElementById('j-stand-nilai').value || 0
-                });
+                };
+                db.journals.unshift(newJournal);
+                const student = db.students.find(item => String(item.id) === String(studentId));
+                if (student) ensureDailyWAReport(student, today, newJournal.id);
                 
                 // Hitung Earning Tentor otomatis berdasarkan aturan fee (Simulasi Sederhana PRD)
                 const tutor = db.tutors.find(t => t.id === tutorId);
@@ -1742,7 +2851,12 @@
                     });
                 }
 
-                saveDatabaseAfterChange('Jurnal belajar manual berhasil disimpan.');
+                const invoices = createMonthlyInvoicesForSchedule(db.schedules.find(item => String(item.id) === String(newSchedId)));
+                saveDatabaseAfterChange(invoices.created
+                    ? `Jurnal berhasil disimpan dan ${invoices.created} tagihan bulanan dibuat.`
+                    : invoices.missingTariff
+                        ? 'Jurnal berhasil disimpan. Atur tarif bulanan siswa untuk membuat invoice otomatis.'
+                        : 'Jurnal belajar manual berhasil disimpan.');
                 if(currentState.route === 'journals') navigate('journals');
             });
         }
