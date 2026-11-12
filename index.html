@@ -1059,24 +1059,28 @@
                                 <tbody class="divide-y divide-slate-100">
                                     ${db.tutors.map(t => {
                                         const monthSummary = getTutorPeriodSummary(t, 'month');
+                                        const subjects = String(t.subject || 'Umum')
+                                            .split(',')
+                                            .map(subject => subject.trim())
+                                            .filter(Boolean);
                                         return `
                                         <tr class="hover:bg-slate-50 transition-colors">
                                             <td class="px-6 py-4">
                                                 <div class="flex items-center gap-3">
                                                     <div class="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center font-bold text-emerald-700">
-                                                        ${t.name.charAt(0)}
+                                                        ${escapeHtml(String(t.name || '?').charAt(0))}
                                                     </div>
                                                     <div>
-                                                        <p class="font-semibold text-slate-800">${t.name}</p>
+                                                        <p class="font-semibold text-slate-800">${escapeHtml(t.name)}</p>
                                                         <div class="flex items-center gap-1 text-xs text-slate-500 mt-0.5">
-                                                            <i data-lucide="phone" class="w-3 h-3"></i> ${t.phone}
+                                                            <i data-lucide="phone" class="w-3 h-3"></i> ${escapeHtml(t.phone)}
                                                         </div>
                                                     </div>
                                                 </div>
                                             </td>
                                             <td class="px-6 py-4">
                                                 <div class="flex gap-1 flex-wrap">
-                                                    ${t.subject.split(', ').map(sub => `<span class="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs border border-slate-200">${sub}</span>`).join('')}
+                                                    ${subjects.map(subject => `<span class="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs border border-slate-200">${escapeHtml(subject)}</span>`).join('')}
                                                 </div>
                                             </td>
                                             <td class="px-6 py-4">
@@ -1085,13 +1089,14 @@
                                             </td>
                                             <td class="px-6 py-4">
                                                 <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${t.status === 'Aktif' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}">
-                                                    <span class="w-1.5 h-1.5 rounded-full ${t.status === 'Aktif' ? 'bg-green-500' : 'bg-slate-400'}"></span> ${t.status}
+                                                    <span class="w-1.5 h-1.5 rounded-full ${t.status === 'Aktif' ? 'bg-green-500' : 'bg-slate-400'}"></span> ${escapeHtml(t.status)}
                                                 </span>
                                             </td>
                                             <td class="px-6 py-4 text-right">
-                                                <button onclick="showTutorDetailModal(${t.id})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Detail Profil"><i data-lucide="eye" class="w-4 h-4"></i></button>
-                                                <button onclick="showFeeRulesModal(${t.id})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Aturan Fee"><i data-lucide="wallet" class="w-4 h-4"></i></button>
-                                                <button class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button>
+                                                <button onclick="showTutorDetailModal(${Number(t.id)})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Detail Profil"><i data-lucide="eye" class="w-4 h-4"></i></button>
+                                                <button onclick="showFeeRulesModal(${Number(t.id)})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Aturan Fee"><i data-lucide="wallet" class="w-4 h-4"></i></button>
+                                                <button onclick="showEditTutorModal(${Number(t.id)})" class="p-1.5 text-slate-400 hover:text-primary-600 rounded transition-colors" title="Edit Tentor"><i data-lucide="edit-2" class="w-4 h-4"></i></button>
+                                                <button onclick="deleteTutor(${Number(t.id)})" class="p-1.5 text-slate-400 hover:text-red-600 rounded transition-colors" title="Hapus Tentor"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
                                             </td>
                                         </tr>
                                     `}).join('')}
@@ -2431,6 +2436,15 @@
             });
         }
 
+        function getNextTutorId() {
+            return [
+                ...db.tutors.map(tutor => tutor.id),
+                ...db.tutorEarnings.map(earning => earning.tutorId),
+                ...db.tutorPayments.map(payment => payment.tutorId),
+                ...db.journals.map(journal => journal.tutorId)
+            ].reduce((maximum, id) => Math.max(maximum, Number(id) || 0), 0) + 1;
+        }
+
         function showAddTutorModal() {
             const formHtml = `
                 <div class="space-y-4">
@@ -2453,13 +2467,21 @@
                 </div>
             `;
             openModal('Tambah Data Tentor', formHtml, 'Simpan Tentor', () => {
-                const name = document.getElementById('inp-tutor-name').value || 'Tentor Baru';
-                const phone = document.getElementById('inp-tutor-phone').value || '-';
-                const edu = document.getElementById('inp-tutor-edu').value || '-';
-                const subject = document.getElementById('inp-tutor-subject').value || 'Umum';
+                const name = document.getElementById('inp-tutor-name').value.trim();
+                const phone = document.getElementById('inp-tutor-phone').value.trim() || '-';
+                const edu = document.getElementById('inp-tutor-edu').value.trim() || '-';
+                const subject = document.getElementById('inp-tutor-subject').value
+                    .split(',')
+                    .map(item => item.trim())
+                    .filter(Boolean)
+                    .join(', ');
+                if (!name || !subject) {
+                    showToast('Nama tentor dan minimal satu mata pelajaran wajib diisi.', 'error');
+                    return false;
+                }
                 
                 db.tutors.push({
-                    id: db.tutors.length + 1,
+                    id: getNextTutorId(),
                     name: name,
                     phone: phone,
                     education: edu,
@@ -2471,6 +2493,155 @@
                 saveDatabaseAfterChange(`Data tentor ${name} berhasil disimpan.`);
                 if(currentState.route === 'tutors') navigate('tutors');
             });
+        }
+
+        function showEditTutorModal(tutorId) {
+            const tutor = db.tutors.find(item => String(item.id) === String(tutorId));
+            if (!tutor) {
+                showToast('Data tentor tidak ditemukan.', 'error');
+                return;
+            }
+
+            const formHtml = `
+                <div class="space-y-4">
+                    <div>
+                        <label for="edit-tutor-name" class="block text-sm font-medium text-slate-700 mb-1">Nama lengkap</label>
+                        <input id="edit-tutor-name" value="${escapeHtml(tutor.name)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" required>
+                    </div>
+                    <div>
+                        <label for="edit-tutor-phone" class="block text-sm font-medium text-slate-700 mb-1">No. WhatsApp</label>
+                        <input id="edit-tutor-phone" value="${escapeHtml(tutor.phone)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    </div>
+                    <div>
+                        <label for="edit-tutor-education" class="block text-sm font-medium text-slate-700 mb-1">Pendidikan terakhir</label>
+                        <input id="edit-tutor-education" value="${escapeHtml(tutor.education)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    </div>
+                    <div>
+                        <label for="edit-tutor-subject" class="block text-sm font-medium text-slate-700 mb-1">Spesialisasi mata pelajaran</label>
+                        <input id="edit-tutor-subject" value="${escapeHtml(tutor.subject)}" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Pisahkan mata pelajaran dengan koma">
+                    </div>
+                    <div>
+                        <label for="edit-tutor-status" class="block text-sm font-medium text-slate-700 mb-1">Status</label>
+                        <select id="edit-tutor-status" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                            <option value="Aktif" ${tutor.status === 'Aktif' ? 'selected' : ''}>Aktif</option>
+                            <option value="Nonaktif" ${tutor.status === 'Nonaktif' ? 'selected' : ''}>Nonaktif</option>
+                        </select>
+                    </div>
+                </div>
+            `;
+
+            openModal(`Edit Data Tentor - ${escapeHtml(tutor.name)}`, formHtml, 'Simpan Perubahan', () => {
+                const name = document.getElementById('edit-tutor-name').value.trim();
+                const subject = document.getElementById('edit-tutor-subject').value
+                    .split(',')
+                    .map(item => item.trim())
+                    .filter(Boolean)
+                    .join(', ');
+                if (!name || !subject) {
+                    showToast('Nama tentor dan minimal satu mata pelajaran wajib diisi.', 'error');
+                    return false;
+                }
+
+                const previous = { ...tutor };
+                tutor.name = name;
+                tutor.phone = document.getElementById('edit-tutor-phone').value.trim() || '-';
+                tutor.education = document.getElementById('edit-tutor-education').value.trim() || '-';
+                tutor.subject = subject;
+                tutor.status = document.getElementById('edit-tutor-status').value;
+
+                persistDatabase(`Data tentor ${name} berhasil diperbarui.`)
+                    .then(() => {
+                        if (currentState.route === 'tutors') navigate('tutors');
+                    })
+                    .catch(() => {
+                        Object.assign(tutor, previous);
+                        if (currentState.route === 'tutors') navigate('tutors');
+                    });
+            });
+        }
+
+        function deleteTutor(tutorId) {
+            const tutor = db.tutors.find(item => String(item.id) === String(tutorId));
+            if (!tutor) {
+                showToast('Data tentor tidak ditemukan.', 'error');
+                return;
+            }
+
+            const relatedSchedules = db.schedules.filter(schedule =>
+                String(schedule.tutorId) === String(tutor.id)
+            );
+            const relatedScheduleIds = new Set(relatedSchedules.map(schedule => String(schedule.id)));
+            const relatedEarnings = db.tutorEarnings.filter(earning =>
+                String(earning.tutorId) === String(tutor.id) ||
+                relatedScheduleIds.has(String(earning.scheduleId))
+            );
+            const relatedEarningIds = new Set(relatedEarnings.map(earning => String(earning.id)));
+            const relatedJournals = db.journals.filter(journal =>
+                String(journal.tutorId) === String(tutor.id) ||
+                relatedScheduleIds.has(String(journal.scheduleId))
+            );
+            const relatedJournalIds = new Set(relatedJournals.map(journal => String(journal.id)));
+            const payoutCount = db.tutorPayments.filter(payment =>
+                String(payment.tutorId) === String(tutor.id)
+            ).length;
+            const confirmation = [
+                `Hapus permanen data tentor ${tutor.name}? Tindakan ini tidak dapat dibatalkan.`,
+                `${relatedSchedules.length} jadwal/presensi, ${relatedJournals.length} jurnal, dan ${relatedEarnings.length} catatan honor terkait akan dihapus.`,
+                payoutCount
+                    ? `${payoutCount} transaksi pengeluaran yang sudah terjadi tetap tersimpan; alokasi ke catatan honor yang dihapus akan dilepas.`
+                    : ''
+            ].filter(Boolean).join('\n\n');
+            if (!window.confirm(confirmation)) return;
+
+            const snapshot = JSON.parse(JSON.stringify(db));
+            const previousSelectedWAReportId = selectedWAReportId;
+            db.schedules = db.schedules.filter(schedule =>
+                !relatedScheduleIds.has(String(schedule.id))
+            );
+            db.journals = db.journals.filter(journal =>
+                !relatedJournalIds.has(String(journal.id))
+            );
+            db.waReports = db.waReports.flatMap(report => {
+                const journalIds = Array.isArray(report.journalIds) ? [...report.journalIds] : [];
+                if (report.journalId != null &&
+                    !journalIds.some(id => String(id) === String(report.journalId))) {
+                    journalIds.push(report.journalId);
+                }
+                const remainingJournalIds = journalIds.filter(id =>
+                    !relatedJournalIds.has(String(id))
+                );
+                if (remainingJournalIds.length === journalIds.length) return [report];
+                if (!remainingJournalIds.length) return [];
+                return [{
+                    ...report,
+                    journalIds: remainingJournalIds,
+                    journalId: remainingJournalIds[0]
+                }];
+            });
+            db.tutorEarnings = db.tutorEarnings.filter(earning =>
+                !relatedEarningIds.has(String(earning.id))
+            );
+            db.tutorPayments = db.tutorPayments.map(payment => ({
+                ...payment,
+                allocations: (payment.allocations || []).filter(allocation =>
+                    !relatedEarningIds.has(String(allocation.earningId))
+                )
+            }));
+            db.tutors = db.tutors.filter(item => String(item.id) !== String(tutor.id));
+            if (!db.waReports.some(report => String(report.id) === String(selectedWAReportId))) {
+                selectedWAReportId = null;
+            }
+
+            persistDatabase(`Data tentor ${tutor.name} beserta data terkait berhasil dihapus.`)
+                .then(() => {
+                    if (currentState.route === 'tutors') navigate('tutors');
+                })
+                .catch(() => {
+                    Object.keys(db).forEach(key => delete db[key]);
+                    Object.assign(db, snapshot);
+                    selectedWAReportId = previousSelectedWAReportId;
+                    if (currentState.route === 'tutors') navigate('tutors');
+                });
         }
 
         function showTutorDetailModal(tutorId, period = 'month') {
@@ -3944,13 +4115,16 @@
                 showToast('Data bukti pengeluaran tidak ditemukan.', 'error');
                 return;
             }
+            const allocationCount = Array.isArray(payment.allocations) ? payment.allocations.length : 0;
             printThermalReceipt(
                 'BUKTI PEMBAYARAN HONOR TENTOR',
                 payment.receiptNumber,
                 payment.date,
                 [
                     ['Nama tentor', payment.tutorName],
-                    ['Honor dibayar', `${payment.allocations.length} catatan honor`]
+                    ['Rincian honor', allocationCount
+                        ? `${allocationCount} catatan honor`
+                        : 'Riwayat transaksi; alokasi sesi sudah dihapus']
                 ],
                 'Dibayarkan',
                 payment.amount,
